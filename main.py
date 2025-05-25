@@ -38,22 +38,35 @@ def run_news_collector():
 
 # --- Dashboard Worker ---
 def run_dashboard():
-    # מריץ Streamlit בתהליך נפרד, לא חוסם את main
     dashboard_script = os.path.join('dashboard', 'dashboard_ui.py')
     if not os.path.exists(dashboard_script):
         print(f"[שגיאה] לא נמצא: {dashboard_script}")
         return
-    # פותח streamlit על פורט ברירת מחדל (8501)
     subprocess.Popen([sys.executable, "-m", "streamlit", "run", dashboard_script])
     print("⚡️ Streamlit Dashboard רץ כעת. פתח דפדפן וגש ל- http://localhost:8501")
 
-# --- פונקציה להפעלה של הכל יחד ---
-def run_all_workers(with_dashboard=False):
+# --- Daily History Downloader Worker (CoinGecko/Old) ---
+def run_history_scheduler():
+    from modules.history_scheduler import run_daily_history_update
+    log("[HistoryScheduler] הורדה אוטומטית של היסטוריה — פעם ביום.")
+    run_daily_history_update(hour=2, minute=0)
+
+# --- Binance All History Downloader Worker (חדש ומקיף) ---
+def run_binance_history_downloader():
+    from modules.binance_history_downloader import download_binance_history_all
+    log("[BinanceHistoryDownloader] הורדה מלאה של כל ההיסטוריה מכל המטבעות (Binance USDT)...")
+    download_binance_history_all()  # לא צריך hour/minute, רץ ומסיים (יכול לקחת זמן)
+
+# --- הפעלת כל ה-workers במקביל ---
+def run_all_workers(with_dashboard=False, with_history_scheduler=False):
     threads = []
     t1 = threading.Thread(target=run_market_collector, daemon=True)
     threads.append(t1)
     t2 = threading.Thread(target=run_news_collector, daemon=True)
     threads.append(t2)
+    if with_history_scheduler:
+        t3 = threading.Thread(target=run_history_scheduler, daemon=True)
+        threads.append(t3)
     if with_dashboard:
         run_dashboard()
     for t in threads:
@@ -74,6 +87,9 @@ def main():
 3. הכל יחד (מומלץ)
 4. Dashboard גרפי בלבד
 5. הכל יחד + Dashboard
+6. Scheduler — הורדה יומית אוטומטית של היסטוריית כל המטבעות (CoinGecko)
+7. הכל יחד + Dashboard + Scheduler היסטוריה
+8. הורדה מלאה של כל ההיסטוריה מכל המטבעות מבינאנס (כל הזוגות USDT, כל הזמנים)
 q. יציאה
 """)
     opt = input("הקלד בחירה: ").strip().lower()
@@ -82,11 +98,17 @@ q. יציאה
     elif opt == '2':
         run_news_collector()
     elif opt == '3':
-        run_all_workers(with_dashboard=False)
+        run_all_workers(with_dashboard=False, with_history_scheduler=False)
     elif opt == '4':
         run_dashboard()
     elif opt == '5':
-        run_all_workers(with_dashboard=True)
+        run_all_workers(with_dashboard=True, with_history_scheduler=False)
+    elif opt == '6':
+        run_history_scheduler()
+    elif opt == '7':
+        run_all_workers(with_dashboard=True, with_history_scheduler=True)
+    elif opt == '8':
+        run_binance_history_downloader()
     elif opt == 'q':
         print("יציאה.")
     else:
