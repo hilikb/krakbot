@@ -4,6 +4,36 @@ import logging
 import os
 import subprocess
 import sys
+import datetime
+
+def auto_git_update():
+    # בדוק האם יש repository בכלל
+    if not os.path.exists(".git"):
+        print("❌ Git repository not found. Skipping auto-update.")
+        return
+
+    # הוסף את כל הקבצים (אפשר לצמצם לתיקיות רלוונטיות)
+    subprocess.run(["git", "add", "."], check=False)
+
+    # האם יש שינויים שמחכים ל-commit?
+    status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    if not status.stdout.strip():
+        print("🔹 No changes to commit.")
+        return
+
+    # צור הודעת commit עם תאריך/שעה
+    commit_msg = f"Auto-update {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    subprocess.run(["git", "commit", "-m", commit_msg], check=False)
+
+    # בצע push (ל-remote הראשי)
+    try:
+        subprocess.run(["git", "push"], check=True)
+        print("✅ Git auto-update: changes committed and pushed!")
+    except Exception as e:
+        print("❌ Git push failed:", e)
+
+# קרא לפונקציה מיד בהרצה
+auto_git_update()
 
 # הגדרת תיקיות ברירת מחדל
 os.makedirs('data', exist_ok=True)

@@ -17,8 +17,8 @@ def get_all_pairs_data():
         s['symbol'] for s in info['symbols']
         if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT'
     ]
-    # ????? ????? (????? ?????)
-    ticker_24h = {x['symbol']: x for x in client.get_ticker_24hr()}  # <-- ??? ???? ?? ??
+
+    ticker_24h = {x['symbol']: x for x in client.get_ticker()} 
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     data = []
     for symbol in symbols:
@@ -33,13 +33,13 @@ def get_all_pairs_data():
         })
     return data
 
-def run_collector(interval=30):
+def run_collector(interval=10):
     print("Market Collector - Collecting data for all symbols")
     while True:
         data = get_all_pairs_data()
         df = pd.DataFrame(data)
         df.to_csv(LIVE_FILE, index=False, encoding='utf-8')
-        # ????? ????????? ?? ?????? ????? (timestamp+pair)
+
         if os.path.exists(HISTORY_FILE):
             try:
                 keys_df = pd.read_csv(HISTORY_FILE, usecols=['timestamp', 'pair'], encoding='utf-8')
