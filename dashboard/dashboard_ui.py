@@ -7,6 +7,163 @@ from config import KRAKEN_API_KEY, KRAKEN_API_SECRET
 
 st.set_page_config(page_title="💎 Kraken PRO Dashboard", layout="wide")
 
+COINGECKO_IDS = {
+    'BTC': 'bitcoin',
+    'ETH': 'ethereum',
+    'USDT': 'tether',
+    'USDC': 'usd-coin',
+    'ADA': 'cardano',
+    'SOL': 'solana',
+    'DOT': 'polkadot',
+    'XTZ': 'tezos',
+    'KAITO': 'kaito',
+    'VIRTUAL': 'virtuals protocol'
+}
+
+def get_backup_price(symbol):
+    try:
+        coingecko_id = COINGECKO_IDS.get(symbol)
+        if not coingecko_id:
+            return 0
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd"
+        r = requests.get(url, timeout=6)
+        p = r.json()
+        return p[coingecko_id]['usd'] if coingecko_id in p else 0
+    except Exception:
+        return 0
+
+def get_kraken_portfolio(api_key, api_secret):
+    import krakenex, time
+    api = krakenex.API(api_key, api_secret)
+    try:
+        balance_resp = api.query_private('Balance')
+        if balance_resp.get('error') and balance_resp['error']:
+            st.error(f"שגיאה בשליפת האחזקות: {balance_resp['error']}")
+            return pd.DataFrame()
+        balances = balance_resp['result']
+        balances = {k: float(v) for k, v in balances.items() if float(v) > 0}
+
+        def clean_symbol(symbol):
+            return symbol.split('.')[0].replace('XBT', 'BTC').replace('XETH', 'ETH').replace('XXRP', 'XRP').replace('XLTC', 'LTC').replace('ZUSD', 'USD').upper()
+
+        symbols = [clean_symbol(coin) for coin in balances.keys() if clean_symbol(coin) not in ['ZUSD', 'USD']]
+
+        # שליפת מחירים מ-Kraken (Ticker)
+        all_pairs = set()
+        for sym in symbols:
+            all_pairs.add(f"{sym}USD")
+            all_pairs.add(f"X{sym}ZUSD")
+        prices = {}
+        for i in range(0, len(all_pairs), 20):
+            pair_batch = ','.join(list(all_pairs)[i:i+20])
+            price_resp = api.query_public('Ticker', {'pair': pair_batch})
+            if 'result' in price_resp:
+                for pair, info in price_resp['result'].items():
+                    for sym in symbols:
+                        if sym in pair:
+                            prices[sym] = float(info['c'][0])
+            time.sleep(0.5)
+
+        portfolio = []
+        symbols_wo_price = []
+        for coin, amount in balances.items():
+            symbol = clean_symbol(coin)
+            if symbol in ['ZUSD', 'USD']:
+                continue
+            price = prices.get(symbol, 0)
+            if price == 0:
+                price = get_backup_price(symbol)
+            if price == 0:
+                symbols_wo_price.append(symbol)
+            value_usd = amount * price
+            image_url = get_coin_image(symbol.lower())
+            portfolio.append({
+                '': f"![{symbol}]({image_url})" if image_url else '',
+                'מטבע': symbol,
+                'כמות': amount,
+                'מחיר נוכחי ($)': price,
+                'שווי עדכני ($)': value_usd,
+            })
+        portf_df = pd.DataFrame(portfolio)
+        portf_df.sort_values('שווי עדכני ($)', ascending=False, inplace=True)
+        if symbols_wo_price:
+            st.warning(f"⚠️ לא נמצאה דרך להביא שווי/מחיר למטבעות: {', '.join(symbols_wo_price)}")
+        return portf_df
+    except Exception as e:
+        st.error(f"שגיאת Kraken API: {e}")
+        return pd.DataFrame()
+    import krakenex, time
+    api = krakenex.API(api_key, api_secret)
+    try:
+        balance_resp = api.query_private('Balance')
+        if balance_resp.get('error') and balance_resp['error']:
+            st.error(f"שגיאה בשליפת האחזקות: {balance_resp['error']}")
+            return pd.DataFrame()
+        balances = balance_resp['result']
+        balances = {k: float(v) for k, v in balances.items() if float(v) > 0}
+        print("balances:", balances)  # DEBUG
+
+        def clean_symbol(symbol):
+            return symbol.split('.')[0].replace('XBT', 'BTC').replace('XETH', 'ETH').replace('XXRP', 'XRP').replace('XLTC', 'LTC').replace('ZUSD', 'USD').upper()
+
+        symbols = [clean_symbol(coin) for coin in balances.keys() if clean_symbol(coin) not in ['ZUSD', 'USD']]
+        print("symbols:", symbols)  # DEBUG
+
+        all_pairs = set()
+        for sym in symbols:
+            all_pairs.add(f"{sym}USD")
+            all_pairs.add(f"X{sym}ZUSD")
+        prices = {}
+        for i in range(0, len(all_pairs), 20):
+            pair_batch = ','.join(list(all_pairs)[i:i+20])
+            price_resp = api.query_public('Ticker', {'pair': pair_batch})
+            if 'result' in price_resp:
+                for pair, info in price_resp['result'].items():
+                    for sym in symbols:
+                        if sym in pair:
+                            prices[sym] = float(info['c'][0])
+            time.sleep(0.5)
+        print("prices:", prices)  # DEBUG
+
+        def get_backup_price(symbol):
+            try:
+                url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd"
+                r = requests.get(url, timeout=6)
+                p = r.json()
+                return list(p.values())[0]['usd'] if p else 0
+            except Exception:
+                return 0
+
+        portfolio = []
+        symbols_wo_price = []
+        for coin, amount in balances.items():
+            symbol = clean_symbol(coin)
+            if symbol in ['ZUSD', 'USD']:
+                continue
+            price = prices.get(symbol, 0)
+            if price == 0:
+                price = get_backup_price(symbol)
+            if price == 0:
+                symbols_wo_price.append(symbol)
+            value_usd = amount * price
+            image_url = get_coin_image(symbol.lower())
+            portfolio.append({
+                '': f"![{symbol}]({image_url})" if image_url else '',
+                'מטבע': symbol,
+                'כמות': amount,
+                'מחיר נוכחי ($)': price,
+                'שווי עדכני ($)': value_usd,
+            })
+        portf_df = pd.DataFrame(portfolio)
+        portf_df.sort_values('שווי עדכני ($)', ascending=False, inplace=True)
+        if symbols_wo_price:
+            st.warning(f"⚠️ לא נמצאה דרך להביא שווי/מחיר למטבעות: {', '.join(symbols_wo_price)}")
+        return portf_df
+    except Exception as e:
+        st.error(f"שגיאת Kraken API: {e}")
+        return pd.DataFrame()
+
+
 def load_data(file, empty_cols=None, parse_dates=None):
     for enc in ['utf-8', 'cp1255', 'cp1252', 'iso-8859-8']:
         try:
@@ -29,68 +186,7 @@ def get_coin_image(symbol):
 def clean_symbol(symbol):
     return symbol.split('.')[0].upper()
 
-def get_kraken_portfolio(api_key, api_secret):
-    import krakenex, time
-    api = krakenex.API(api_key, api_secret)
-    try:
-        balance_resp = api.query_private('Balance')
-        if balance_resp.get('error') and balance_resp['error']:
-            st.error(f"שגיאה בשליפת האחזקות: {balance_resp['error']}")
-            return pd.DataFrame()
-        balances = balance_resp['result']
-        balances = {k: float(v) for k, v in balances.items() if float(v) > 0}
-        if not balances:
-            st.info("לא נמצאו אחזקות פעילות בחשבון Kraken.")
-            return pd.DataFrame()
-        symbol_map = {}
-        all_pairs = []
-        for coin in balances.keys():
-            if coin in ['ZUSD', 'USD']:
-                continue
-            coin_fixed = coin.replace('XBT','BTC').replace('XETH','ETH').replace('XXRP','XRP').replace('XLTC','LTC').replace('ZUSD','USD')
-            symbol_map[coin] = coin_fixed
-            all_pairs.append(f"{coin_fixed}USD")
-            all_pairs.append(f"X{coin_fixed}ZUSD")
-        all_pairs = list(set(all_pairs))
-        prices = {}
-        for i in range(0, len(all_pairs), 20):
-            pair_batch = ','.join(all_pairs[i:i+20])
-            price_resp = api.query_public('Ticker', {'pair': pair_batch})
-            if 'result' in price_resp:
-                for pair, info in price_resp['result'].items():
-                    symbol = pair.replace('USD','').replace('X','').replace('Z','').replace('.S','').replace('.F','').replace('.M','').replace('.U','').replace('.N','').replace('.X','').replace('.Z','').upper()
-                    prices[symbol] = float(info['c'][0])
-            time.sleep(0.5)
-        def get_backup_price(symbol):
-            try:
-                url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd"
-                r = requests.get(url, timeout=6)
-                p = r.json()
-                return list(p.values())[0]['usd'] if p else 0
-            except Exception:
-                return 0
-        portfolio = []
-        for coin, amount in balances.items():
-            symbol_raw = symbol_map.get(coin, coin).upper()
-            symbol = clean_symbol(symbol_raw)
-            price = prices.get(symbol, 0)
-            if price == 0:
-                price = get_backup_price(symbol)
-            value_usd = amount * price
-            img_url = get_coin_image(symbol.lower())
-            portfolio.append({
-                '': f"![{symbol}]({img_url})" if img_url else '',
-                'מטבע': symbol,
-                'כמות': amount,
-                'מחיר נוכחי ($)': price,
-                'שווי עדכני ($)': value_usd,
-            })
-        portf_df = pd.DataFrame(portfolio)
-        portf_df.sort_values('שווי עדכני ($)', ascending=False, inplace=True)
-        return portf_df
-    except Exception as e:
-        st.error(f"שגיאת Kraken API: {e}")
-        return pd.DataFrame()
+
 
 MARKET_LIVE = "data/market_live.csv"
 OPTIMIZATION_SUMMARY = "data/param_optimization_summary.csv"
