@@ -10,7 +10,7 @@ DATA_DIR = os.path.join(BASE_DIR, 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
 OUTFILE = os.path.join(DATA_DIR, 'market_history.csv')
 
-def get_all_symbols(quote_asset='USDC'):
+def get_all_symbols(quote_asset='USDT'):
     client = Client()
     info = client.get_exchange_info()
     symbols = [s['symbol'] for s in info['symbols'] if s['status'] == 'TRADING' and s['quoteAsset'] == quote_asset]
@@ -38,8 +38,8 @@ def get_binance_ohlc(symbol, interval='1d', start_str='1 Jan 2007', end_str=None
 
 def download_binance_history_all(outfile=OUTFILE, start_str='1 Jan 2007'):
     all_dfs = []
-    symbols = get_all_symbols(quote_asset='USDC')
-    print(f"⏳ מוריד היסטוריה ל-{len(symbols)} מטבעות/זוגות (USDC).")
+    symbols = get_all_symbols(quote_asset='USDT')
+    print(f"⏳ מוריד היסטוריה ל-{len(symbols)} מטבעות/זוגות (USDT).")
     for symbol in tqdm(symbols):
         df = get_binance_ohlc(symbol, start_str=start_str)
         if df is not None and not df.empty:

@@ -1,69 +1,58 @@
-import krakenex
+import os
 import pandas as pd
 import time
-import os
 from datetime import datetime
-from config import KRAKEN_API_KEY, KRAKEN_API_SECRET
+from binance.client import Client
 
-api = krakenex.API(KRAKEN_API_KEY, KRAKEN_API_SECRET)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+LIVE_FILE = os.path.join(DATA_DIR, 'market_live.csv')
+HISTORY_FILE = os.path.join(DATA_DIR, 'market_history.csv')
 
-# רשימת מטבעות Stable שברצונך לדלג עליהם
-STABLE_COINS = ['USDT', 'USDC', 'DAI', 'USDP', 'TUSD', 'USD']
-
-def get_all_pairs():
-    pairs_data = api.query_public("AssetPairs")['result']
-    all_pairs = []
-    for pair, details in pairs_data.items():
-        base = details['base']
-        quote = details['quote']
-        altname = details['altname']
-
-        # בדיקה האם המטבעות יציבים (Stable)
-        if not (base in STABLE_COINS or quote in STABLE_COINS):
-            all_pairs.append(altname)
-    return all_pairs
-
-def fetch_market_price(pair):
-    try:
-        resp = api.query_public('Ticker', {'pair': pair})
-        result = resp['result']
-        ticker = result[list(result.keys())[0]]
-        price = float(ticker['c'][0])
-        volume = float(ticker['v'][1])
-        high = float(ticker['h'][1])
-        low = float(ticker['l'][1])
-        return price, volume, high, low
-    except Exception as e:
-        print(f"Error fetching {pair}: {e}")
-        return None, None, None, None
+def get_all_pairs_data():
+    client = Client()
+    info = client.get_exchange_info()
+    symbols = [
+        s['symbol'] for s in info['symbols']
+        if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT'
+    ]
+    # ????? ????? (????? ?????)
+    ticker_24h = {x['symbol']: x for x in client.get_ticker_24hr()}  # <-- ??? ???? ?? ??
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    data = []
+    for symbol in symbols:
+        t = ticker_24h.get(symbol, {})
+        data.append({
+            'timestamp': now,
+            'pair': symbol,
+            'price': float(t.get('lastPrice', t.get('price', 0))),
+            'volume': float(t.get('volume', 0)),
+            'high_24h': float(t.get('highPrice', 0)),
+            'low_24h': float(t.get('lowPrice', 0)),
+        })
+    return data
 
 def run_collector(interval=30):
-    pairs = get_all_pairs()
-    os.makedirs('data', exist_ok=True)
-    print(f"סריקת {len(pairs)} זוגות מטבעות ללא Stable Coins...")
-
+    print("Market Collector - Collecting data for all symbols")
     while True:
-        market_snapshot = []
-        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-
-        for pair in pairs:
-            price, volume, high, low = fetch_market_price(pair)
-            if price is None:
-                continue
-
-            market_snapshot.append({
-                'time': now,
-                'pair': pair,
-                'price': price,
-                'volume': volume,
-                'high_24h': high,
-                'low_24h': low
-            })
-
-            print(f"[{now}] {pair} מחיר: {price} נפח: {volume}")
-
-        if market_snapshot:
-            df = pd.DataFrame(market_snapshot)
-            df.to_csv('data/market_live.csv', mode='a', header=not os.path.exists('data/market_live.csv'), index=False)
-
+        data = get_all_pairs_data()
+        df = pd.DataFrame(data)
+        df.to_csv(LIVE_FILE, index=False, encoding='utf-8')
+        # ????? ????????? ?? ?????? ????? (timestamp+pair)
+        if os.path.exists(HISTORY_FILE):
+            try:
+                keys_df = pd.read_csv(HISTORY_FILE, usecols=['timestamp', 'pair'], encoding='utf-8')
+            except UnicodeDecodeError:
+                keys_df = pd.read_csv(HISTORY_FILE, usecols=['timestamp', 'pair'], encoding='cp1255')
+            merged = df.merge(keys_df, on=['timestamp', 'pair'], how='left', indicator=True)
+            new_rows = df[merged['_merge'] == 'left_only']
+            if not new_rows.empty:
+                new_rows.to_csv(HISTORY_FILE, mode='a', index=False, header=False, encoding='utf-8')
+        else:
+            df.to_csv(HISTORY_FILE, index=False, encoding='utf-8')
+        print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Saved {len(df)} symbols to live/history.")
         time.sleep(interval)
+
+if __name__ == "__main__":
+    run_collector()

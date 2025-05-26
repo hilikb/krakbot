@@ -2,84 +2,184 @@ import streamlit as st
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
+from datetime import datetime
+import krakenex
+from config import KRAKEN_API_KEY, KRAKEN_API_SECRET
 
-st.set_page_config(page_title="Crypto Bot Dashboard", layout="wide")
-
-# -- Utility functions --
-def load_data(file, empty_cols=None):
+# -- Utility --
+def load_data(file, empty_cols=None, parse_dates=None):
     if not os.path.exists(file):
         if empty_cols:
             return pd.DataFrame(columns=empty_cols)
         else:
             return pd.DataFrame()
-    return pd.read_csv(file)
+    for enc in ['utf-8', 'cp1255', 'cp1252', 'iso-8859-8']:
+        try:
+            return pd.read_csv(file, parse_dates=parse_dates, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            # ????? ???? �� ?? ?? ???? ????
+            continue
+    # ?? ??? ???? �� ????? ????????? ??? (?? ????? ?????)
+    if empty_cols:
+        return pd.DataFrame(columns=empty_cols)
+    return pd.DataFrame()
 
-# -- Load market data --
-market_path = "data/market_live.csv"
-market_df = load_data(market_path, empty_cols=['time', 'pair', 'price', 'volume', 'high_24h', 'low_24h'])
 
-st.title("🚀 Crypto Bot Dashboard")
-st.markdown("### 🔸 נתוני שוק חיים")
-if not market_df.empty:
-    # הצגת מטבעות מובילים בלבד (לדוג' לפי נפח)
-    top_coins = market_df.groupby('pair').tail(1).sort_values('volume', ascending=False).head(10)
-    st.dataframe(top_coins[['pair', 'price', 'volume', 'high_24h', 'low_24h']], use_container_width=True)
+# -- Kraken Portfolio (Live) --
+def get_kraken_portfolio(api_key, api_secret):
+    api = krakenex.API(api_key, api_secret)
+    try:
+        balance_resp = api.query_private('Balance')
+        if balance_resp.get('error'):
+            st.error(f"????? ?????? ???????: {balance_resp['error']}")
+            return pd.DataFrame()
+        balances = balance_resp['result']
+        # ????? ?????? ???????
+        balances = {k: float(v) for k, v in balances.items() if float(v) > 0}
+        if not balances:
+            st.info("?? ????? ?????? ?????? ?????? Kraken.")
+            return pd.DataFrame()
+        # ????? ???? ????? ??? ????
+        price_resp = api.query_public('Ticker', {'pair': ','.join([f"{coin}USD" for coin in balances.keys()])})
+        prices = {}
+        for pair, info in price_resp['result'].items():
+            prices[pair.replace('USD','')] = float(info['c'][0])
+        portfolio = []
+        for coin, amount in balances.items():
+            # ????? ?????? ??? Kraken naming (XETH �� ETH, XBT �� BTC ???��)
+            symbol = coin.replace('XBT', 'BTC').replace('XETH', 'ETH').replace('XXRP','XRP').replace('XLTC','LTC').replace('ZUSD','USD').replace('ZEUR','EUR')
+            price = prices.get(symbol, 0)
+            value_usd = amount * price
+            portfolio.append({
+                '????': symbol,
+                '????': amount,
+                '???? ????? ($)': value_usd,
+                '???? ?????': price
+            })
+        portf_df = pd.DataFrame(portfolio)
+        portf_df.sort_values('???? ????? ($)', ascending=False, inplace=True)
+        return portf_df
+    except Exception as e:
+        st.error(f"????? API: {e}")
+        return pd.DataFrame()
+
+# -- Paths --
+MARKET_LIVE = "data/market_live.csv"
+MARKET_HISTORY = "data/market_history.csv"
+OPTIMIZATION_SUMMARY = "data/param_optimization_summary.csv"
+NEWS_FEED = "data/news_feed.csv"
+
+st.set_page_config(page_title="??????? ??? ??????", layout="wide")
+
+st.title("?? ??????? ??? ?????? ??????")
+st.markdown("##### ??? ??? ????????? ?????, ????? ???????, ????? ?????? ??????? ???????????.")
+
+# --- ????? ???? ???? (???? / ????????) ---
+source = st.radio("??? ???? ??????:", ["???? (??)", "????????"])
+if source == "???? (??)":
+    market_df = load_data(MARKET_LIVE,encoding='cp1255', empty_cols=['timestamp', 'pair', 'price', 'volume', 'high_24h', 'low_24h'], parse_dates=['timestamp'])
 else:
-    st.warning("לא נמצאו נתוני שוק חיים.")
+    market_df = load_data(MARKET_HISTORY,encoding='cp1255', empty_cols=['timestamp', 'pair', 'price', 'volume', 'high_24h', 'low_24h'], parse_dates=['timestamp'])
 
-# -- גרף דינמי לפי בחירת מטבע --
 if not market_df.empty:
-    coin_options = market_df['pair'].unique().tolist()
-    selected_coin = st.selectbox("בחר מטבע לצפייה בגרף", coin_options, index=0)
-    coin_data = market_df[market_df['pair'] == selected_coin]
-    st.write(f"**גרף מחירים למטבע {selected_coin}:**")
+    pairs = sorted(market_df['pair'].unique())
+    selected = st.multiselect("??? ?????? ??????? (?? 5):", pairs, default=pairs[:2], max_selections=5)
+
+    st.subheader("?? ??? ?????? ????? ??????")
     fig, ax = plt.subplots()
-    ax.plot(pd.to_datetime(coin_data['time']), coin_data['price'], label=selected_coin)
-    ax.set_xlabel("זמן")
-    ax.set_ylabel("מחיר")
+    for symbol in selected:
+        df = market_df[market_df['pair'] == symbol].sort_values('timestamp')
+        ax.plot(df['timestamp'], df['price'], label=symbol)
+    ax.set_xlabel("???")
+    ax.set_ylabel("????")
     ax.legend()
     st.pyplot(fig)
 
-# -- חדשות עדכניות --
-news_path = "data/news_feed.csv"
-news_df = load_data(news_path, empty_cols=['timestamp','title','url','currencies','sentiment','source','domain','summary'])
+    st.subheader("?? ??? ?????? + ????? ?? + ????? ???")
+    coin_vol = st.selectbox("??? ???? ?????? ???????", pairs, index=0)
+    df = market_df[market_df['pair'] == coin_vol].sort_values('timestamp')
+    df['sma'] = df['price'].rolling(window=20).mean()
+    df['std'] = df['price'].rolling(window=20).std()
+    fig2, ax2 = plt.subplots()
+    ax2.plot(df['timestamp'], df['price'], label="????")
+    ax2.plot(df['timestamp'], df['sma'], label="????? ?? (20)")
+    ax2.fill_between(df['timestamp'], df['sma']-df['std'], df['sma']+df['std'], color='gray', alpha=0.2, label="????? ???")
+    ax2.set_xlabel("???")
+    ax2.set_ylabel("????")
+    ax2.legend()
+    st.pyplot(fig2)
 
-with st.expander("📰 חדשות קריפטו אחרונות"):
-    if not news_df.empty:
-        st.write(news_df[['timestamp','title','currencies','sentiment','source']].head(15))
+    fig3, ax3 = plt.subplots()
+    ax3.bar(df['timestamp'], df['volume'], width=0.01, color='orange', label="??????")
+    ax3.set_xlabel("???")
+    ax3.set_ylabel("??????")
+    st.pyplot(fig3)
+
+    st.markdown(f"""
+    **???? ?????**: {df['price'].iloc[-1]:,.4f}  
+    **???? ?????**: {df['price'].iloc[0]:,.4f}  
+    **????? ?????**: {((df['price'].iloc[-1] / df['price'].iloc[0] - 1) * 100):.2f}%  
+    **???**: {df['price'].max():,.4f}  
+    **???**: {df['price'].min():,.4f}
+    """)
+
+    # -- ????????? ????? ???? --
+    st.subheader("?? ????????? ????? ?-Kraken")
+    kraken_portf = get_kraken_portfolio(KRAKEN_API_KEY, KRAKEN_API_SECRET)
+    if not kraken_portf.empty:
+        st.dataframe(kraken_portf, use_container_width=True)
+        total_val = kraken_portf['???? ????? ($)'].sum()
+        st.success(f"?? ??? ????: ${total_val:,.2f}")
     else:
-        st.info("לא נמצאו חדשות. הפעל את news_collector.")
+        st.info("??? ?????? ?????? ?? ????? ?????? ??API.")
 
-# -- סימולציה חיה --
-st.markdown("---")
-st.subheader("📊 הפעל סימולציית מסחר על מטבע נבחר:")
+    # -- Alerts (???' ???? ?? ????? ??) --
+    price_changes = ((df['price'].iloc[-1] / df['price'].iloc[0] - 1) * 100)
+    if price_changes > 10:
+        st.warning(f"?? {coin_vol} ??? ????? ?-10%!")
+    if price_changes < -10:
+        st.warning(f"?? {coin_vol} ??? ????? ?-10%!")
 
-sim_coin = st.selectbox("בחר מטבע לסימולציה", coin_options, key="simcoin")
-sim_balance = st.number_input("סכום פתיחה ($)", min_value=100, max_value=50000, value=1000, step=100)
-sim_strategy = st.selectbox("אסטרטגיה", ['combined', 'rsi', 'ema', 'macd', 'bollinger', 'stochastic'])
-run_sim = st.button("🚦 הרץ סימולציה")
+    # -- ????? --
+    news_df = load_data(NEWS_FEED, empty_cols=['timestamp','title','url','currencies','sentiment','source','domain','summary'])
+    with st.expander("?? ????? ??????"):
+        if not news_df.empty:
+            st.write(news_df[['timestamp','title','currencies','sentiment','source']].head(15))
+        else:
+            st.info("?? ????? ?????.")
 
-if run_sim:
-    # טעינת המודולים
-    from modules.strategy_engine import StrategyEngine
-    from modules.simulation_core import SimulationEngine
+    # -- ??????????? --
+    opt_df = load_data(OPTIMIZATION_SUMMARY)
+    with st.expander("?? ?????? ???????????"):
+        if not opt_df.empty:
+            st.dataframe(opt_df.sort_values('avg_profit_pct', ascending=False).head(20), use_container_width=True)
+        else:
+            st.info("??? ????? ?????? ???????????.")
 
-    coin_df = market_df[market_df['pair'] == sim_coin].copy()
-    if len(coin_df) < 20:
-        st.error("לא מספיק נתונים לסימולציה.")
-    else:
-        se = StrategyEngine(coin_df)
-        signals = se.generate_signals(strategy=sim_strategy)
-        sim = SimulationEngine(initial_balance=sim_balance)
-        results = sim.run_simulation(signals, strategy=sim_strategy)
-        st.success(f"יתרת סיום: ${results['final_balance']:.2f}")
-        st.info(f"אחוז רווח: {results['total_profit_pct']*100:.2f}%")
-        st.write("פירוט טריידים:")
-        st.dataframe(results['trade_log'].tail(10), use_container_width=True)
+    # -- ????????? (?????????) --
+    st.subheader("?? ???? ????????? ?? ?? ??????? ?????")
+    auto_sim = st.button("?? ???? ????????? (?? ?? ???????)")
+    sim_status_placeholder = st.empty()
+    sim_results_placeholder = st.empty()
 
-# -- רענון נתונים --
-if st.button("🔄 רענן נתונים"):
+    if auto_sim:
+        import time
+        from modules.simulation_core import run_simulations_all_coins
+        sim_status_placeholder.info("????????? ???, ???? ?????...")
+        try:
+            run_simulations_all_coins()
+            sim_status_placeholder.success("????????? ??????? ??")
+            sim_sum = load_data("data/simulation_summary.csv", encoding='cp1255')
+            sim_results_placeholder.dataframe(sim_sum.sort_values('final_balance', ascending=False).head(15))
+        except Exception as e:
+            sim_status_placeholder.error(f"????? ????? ????????: {e}")
+
+else:
+    st.error("??? ????? ???? ?????.")
+
+if st.button("?? ???? ???????"):
     st.experimental_rerun()
 
-st.markdown("---")
-st.caption("פיתוח: Kraken Crypto Bot AI | Powered by Streamlit")
+st.caption("??? ?????? Kraken | ??????? ??? ? Powered by Streamlit")
