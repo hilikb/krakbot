@@ -7,10 +7,21 @@ import numpy as np
 from datetime import datetime
 import time
 import os
+import sys
+import threading
+import queue
 
-# הגדרות בסיסיות
-KRAKEN_API_KEY = os.getenv('KRAKEN_API_KEY', '')
-KRAKEN_API_SECRET = os.getenv('KRAKEN_API_SECRET', '')
+# הוספת נתיב למודולים
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import Config
+
+# בדיקת זמינות WebSocket
+try:
+    from modules.market_collector import HybridMarketCollector, RealTimePriceUpdate
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+    from modules.market_collector import MarketCollector
 
 # הגדרת עמוד
 st.set_page_config(
@@ -19,7 +30,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS פשוט
+# CSS פשוט עם אינדיקטור WebSocket
 st.markdown("""
 <style>
     .big-font {
@@ -35,14 +46,75 @@ st.markdown("""
     .red {
         color: #ff3366;
     }
+    .websocket-indicator {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: #1e1e1e;
+        border: 2px solid #00ff88;
+        border-radius: 20px;
+        padding: 10px 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        z-index: 1000;
+    }
+    .ws-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #00ff88;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
 class KrakenDashboard:
     def __init__(self):
         self.api = None
-        if KRAKEN_API_KEY and KRAKEN_API_SECRET:
-            self.api = krakenex.API(KRAKEN_API_KEY, KRAKEN_API_SECRET)
+        if Config.KRAKEN_API_KEY and Config.KRAKEN_API_SECRET:
+            self.api = krakenex.API(Config.KRAKEN_API_KEY, Config.KRAKEN_API_SECRET)
+        
+        # WebSocket support
+        self.use_websocket = WEBSOCKET_AVAILABLE and os.getenv('HYBRID_MODE', 'false').lower() == 'true'
+        self.hybrid_collector = None
+        self.price_queue = queue.Queue()
+        
+        # אתחול WebSocket אם זמין
+        if self.use_websocket and 'ws_collector' not in st.session_state:
+            self._init_websocket()
+    
+    def _init_websocket(self):
+        """אתחול WebSocket collector"""
+        try:
+            symbols = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT']
+            self.hybrid_collector = HybridMarketCollector(
+                symbols=symbols,
+                api_key=Config.KRAKEN_API_KEY,
+                api_secret=Config.KRAKEN_API_SECRET
+            )
+            
+            # הוספת callback
+            def on_price_update(update: RealTimePriceUpdate):
+                self.price_queue.put(update)
+            
+            self.hybrid_collector.add_data_callback(on_price_update)
+            
+            # התחלה בthread נפרד
+            thread = threading.Thread(target=self.hybrid_collector.start, daemon=True)
+            thread.start()
+            
+            st.session_state.ws_collector = self.hybrid_collector
+            st.session_state.ws_active = True
+            
+        except Exception as e:
+            st.error(f"Failed to initialize WebSocket: {e}")
+            self.use_websocket = False
     
     def clean_symbol(self, symbol):
         """ניקוי סמלי מטבעות"""
@@ -62,23 +134,35 @@ class KrakenDashboard:
                 
         return cleaned
     
-    @st.cache_data(ttl=60)
-    def get_portfolio_data(_self):
-        """שליפת נתוני פורטפוליו"""
-        if not _self.api:
+    def get_websocket_prices(self):
+        """קבלת מחירים מ-WebSocket"""
+        if not self.use_websocket or not st.session_state.get('ws_collector'):
+            return {}
+        
+        try:
+            return st.session_state.ws_collector.get_latest_prices()
+        except:
+            return {}
+    
+    def get_portfolio_data(self):
+        """שליפת נתוני פורטפוליו עם תמיכת WebSocket"""
+        if not self.api:
             return None, None, None
         
         try:
             # יתרות
-            balance_resp = _self.api.query_private('Balance')
+            balance_resp = self.api.query_private('Balance')
             if balance_resp.get('error'):
                 st.error(f"Error: {balance_resp['error']}")
                 return None, None, None
             
             balances = balance_resp.get('result', {})
             
-            # מחירים
-            ticker_resp = _self.api.query_public('Ticker')
+            # מחירים - העדפה ל-WebSocket
+            ws_prices = self.get_websocket_prices() if self.use_websocket else {}
+            
+            # HTTP fallback for missing prices
+            ticker_resp = self.api.query_public('Ticker')
             
             # עיבוד נתונים
             portfolio = []
@@ -89,8 +173,17 @@ class KrakenDashboard:
             if 'result' in ticker_resp:
                 for pair, info in ticker_resp['result'].items():
                     if 'USD' in pair:
-                        symbol = _self.clean_symbol(pair.replace('USD', '').replace('ZUSD', ''))
-                        if symbol not in prices:
+                        symbol = self.clean_symbol(pair.replace('USD', '').replace('ZUSD', ''))
+                        
+                        # בדיקה אם יש מחיר WebSocket עדכני יותר
+                        if symbol in ws_prices:
+                            ws_data = ws_prices[symbol]
+                            prices[symbol] = {
+                                'price': ws_data.price,
+                                'change_24h': ws_data.change_24h_pct,
+                                'source': 'websocket'
+                            }
+                        elif symbol not in prices:
                             try:
                                 current = float(info['c'][0])
                                 open_price = float(info.get('o', current))
@@ -98,7 +191,8 @@ class KrakenDashboard:
                                 
                                 prices[symbol] = {
                                     'price': current,
-                                    'change_24h': change
+                                    'change_24h': change,
+                                    'source': 'http'
                                 }
                             except:
                                 continue
@@ -109,7 +203,7 @@ class KrakenDashboard:
                 if amount < 0.0001:
                     continue
                 
-                symbol = _self.clean_symbol(asset)
+                symbol = self.clean_symbol(asset)
                 
                 # פיאט
                 if symbol in ['USD', 'EUR', 'GBP']:
@@ -127,7 +221,8 @@ class KrakenDashboard:
                         'Amount': amount,
                         'Price': price,
                         'Value': value,
-                        'Change': price_info.get('change_24h', 0)
+                        'Change': price_info.get('change_24h', 0),
+                        'Source': price_info.get('source', 'unknown')
                     })
                     total_value_usd += value
             
@@ -146,6 +241,15 @@ class KrakenDashboard:
 def main():
     st.title("💎 Kraken Portfolio Dashboard")
     
+    # הוספת אינדיקטור WebSocket
+    if WEBSOCKET_AVAILABLE and st.session_state.get('ws_active'):
+        st.markdown("""
+        <div class="websocket-indicator">
+            <div class="ws-dot"></div>
+            <span style="color: #00ff88; font-weight: bold;">WebSocket LIVE</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
     dashboard = KrakenDashboard()
     
     # בדיקת חיבור
@@ -153,12 +257,17 @@ def main():
         st.error("❌ No API connection. Please set KRAKEN_API_KEY and KRAKEN_API_SECRET environment variables.")
         st.stop()
     
-    # כפתור רענון
+    # כפתור רענון עם auto-refresh option
     col1, col2, col3 = st.columns([1, 1, 4])
     with col1:
         if st.button("🔄 Refresh", type="primary"):
             st.cache_data.clear()
             st.rerun()
+    
+    with col2:
+        auto_refresh = st.checkbox("Auto refresh", value=dashboard.use_websocket)
+        if auto_refresh and not dashboard.use_websocket:
+            st_autorefresh(interval=5000, key="auto_refresh")
     
     # שליפת נתונים
     with st.spinner("Loading portfolio data..."):
@@ -167,7 +276,7 @@ def main():
     if portfolio_df is None:
         st.stop()
     
-    # מטריקות ראשיות
+    # מטריקות ראשיות עם אינדיקטור מקור
     st.markdown("## 📊 Portfolio Overview")
     
     col1, col2, col3, col4 = st.columns(4)
@@ -193,32 +302,48 @@ def main():
         else:
             st.metric("Top Asset", "N/A")
     
-    # תצוגת פורטפוליו
+    # תצוגת פורטפוליו עם אינדיקטור מקור נתונים
     if not portfolio_df.empty:
         col1, col2 = st.columns([2, 1])
         
         with col1:
             st.markdown("### 💰 Holdings")
             
-            # עיצוב טבלה
+            # הוספת עמודת מקור נתונים
             display_df = portfolio_df.copy()
+            
+            # אייקון לפי מקור
+            display_df['📡'] = display_df['Source'].apply(
+                lambda x: '⚡' if x == 'websocket' else '📊'
+            )
+            
             display_df['Price'] = display_df['Price'].apply(lambda x: f"${x:,.4f}")
             display_df['Value'] = display_df['Value'].apply(lambda x: f"${x:,.2f}")
             display_df['Amount'] = display_df['Amount'].apply(lambda x: f"{x:.6f}")
             display_df['Percentage'] = display_df['Percentage'].apply(lambda x: f"{x:.1f}%")
             display_df['Change'] = display_df['Change'].apply(lambda x: f"{x:+.2f}%")
             
+            # הסרת עמודת Source המקורית
+            display_df = display_df.drop('Source', axis=1)
+            
             st.dataframe(
                 display_df,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
+                    "📡": st.column_config.TextColumn(
+                        "Source",
+                        help="⚡ = WebSocket (Real-time), 📊 = HTTP"
+                    ),
                     "Change": st.column_config.TextColumn(
                         "24h Change",
                         help="24 hour price change"
                     )
                 }
             )
+            
+            # הוספת מקרא
+            st.caption("⚡ = Real-time WebSocket data | 📊 = HTTP data")
         
         with col2:
             st.markdown("### 📊 Distribution")
@@ -246,48 +371,51 @@ def main():
             
             st.plotly_chart(fig, use_container_width=True)
     
-    # נתוני שוק
+    # נתוני שוק עם WebSocket
     st.markdown("## 📈 Market Prices")
     
-    if prices:
-        # המרה למטריצה לheatmap
-        price_data = []
-        symbols = []
-        
-        for symbol, data in sorted(prices.items())[:15]:  # Top 15
-            if symbol not in ['USD', 'EUR', 'GBP']:
-                symbols.append(symbol)
-                price_data.append([data.get('change_24h', 0)])
-        
-        if price_data:
-            # Heatmap
-            fig = go.Figure(data=go.Heatmap(
-                z=price_data,
-                x=['24h Change'],
-                y=symbols,
-                colorscale='RdYlGn',
-                zmid=0,
-                text=[[f"{val:.2f}%" for val in row] for row in price_data],
-                texttemplate='%{text}',
-                showscale=True,
-                colorbar=dict(
-                    title="Change %",
-                    ticksuffix="%"
-                )
-            ))
+    if dashboard.use_websocket:
+        ws_prices = dashboard.get_websocket_prices()
+        if ws_prices:
+            st.markdown("### ⚡ Real-Time WebSocket Feed")
             
-            fig.update_layout(
-                title="Market Changes (24h)",
-                height=400,
-                xaxis_title="",
-                yaxis_title="Asset"
-            )
+            # יצירת DataFrame מנתוני WebSocket
+            ws_data = []
+            for symbol, update in ws_prices.items():
+                ws_data.append({
+                    'Symbol': symbol,
+                    'Price': f"${update.price:,.2f}",
+                    'Change 24h': f"{update.change_24h_pct:+.2f}%",
+                    'Bid': f"${update.bid:,.2f}",
+                    'Ask': f"${update.ask:,.2f}",
+                    'Volume': f"{update.volume:,.0f}",
+                    'Last Update': update.timestamp.strftime('%H:%M:%S')
+                })
             
-            st.plotly_chart(fig, use_container_width=True)
+            if ws_data:
+                ws_df = pd.DataFrame(ws_data)
+                st.dataframe(ws_df, use_container_width=True, hide_index=True)
     
-    # פוטר
+    # פוטר עם סטטיסטיקות
     st.markdown("---")
-    st.caption(f"Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Kraken Portfolio Dashboard v1.0")
+    
+    if dashboard.use_websocket and st.session_state.get('ws_collector'):
+        stats = st.session_state.ws_collector.get_statistics()
+        st.caption(
+            f"Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
+            f"WebSocket: {stats.get('websocket_status', 'N/A')} | "
+            f"Updates: {stats.get('total_updates', 0)} | "
+            f"Mode: {'⚡ Hybrid' if dashboard.use_websocket else '📊 HTTP'}"
+        )
+    else:
+        st.caption(f"Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Mode: 📊 HTTP Only")
+
+# Auto refresh for non-websocket mode
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    def st_autorefresh(interval, key):
+        pass
 
 if __name__ == "__main__":
     main()
