@@ -474,6 +474,17 @@ TAKE_PROFIT_PERCENT=10
             dashboard_thread.start()
             processes.append(('Dashboard', dashboard_thread))
             
+            # 3. Start AI dashboard if available
+            if required_features['ai_features']:
+                print("\n🤖 Starting AI dashboard...")
+                ai_thread = threading.Thread(
+                    target=self.run_ai_dashboard_background,
+                    daemon=True
+                )
+                ai_thread.start()
+                processes.append(('AI Dashboard', ai_thread))
+
+            
             print("\n✅ Full system started!")
             print("📊 Components running:")
             for name, _ in processes:
@@ -517,6 +528,22 @@ TAKE_PROFIT_PERCENT=10
         except Exception as e:
             logger.error(f"Background dashboard error: {e}")
     
+    def run_ai_dashboard_background(self):
+        """הפעלת דאשבורד AI ברקע"""
+        try:
+            dashboard_path = os.path.join(DASHBOARDS_DIR, 'advanced_dashboard.py')
+            if not os.path.exists(dashboard_path):
+                logger.warning("AI dashboard file not found")
+                return
+        
+            subprocess.run([
+                sys.executable, "-m", "streamlit", "run", dashboard_path,
+                "--server.headless", "true",
+                "--server.port", "8502"
+            ])
+        except Exception as e:
+            logger.error(f"Background AI dashboard error: {e}")
+
     def run_simulations(self):
         """הפעלת סימולציות"""
         print("\n🧪 Trading Simulation System")
