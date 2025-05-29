@@ -18,7 +18,7 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from modules.ai_trading_engine import AITradingEngine
-from modules.autonomous_trader import AutonomousTrader
+from modules.autonomous_trader import EnhancedAutonomousTrader as AutonomousTrader
 from modules.ml_predictor import MLPredictor
 from modules.portfolio_optimizer import PortfolioOptimizer
 
@@ -262,8 +262,8 @@ class AdvancedTradingDashboard:
         self.portfolio_optimizer = PortfolioOptimizer()
         
         # API connections
-        self.api_key = Config.KRAKEN_API_KEY
-        self.api_secret = Config.KRAKEN_API_SECRET
+        self.api_key = Config.get_api_key('KRAKEN_API_KEY')
+        self.api_secret = Config.get_api_key('KRAKEN_API_SECRET')
         self.api = None
         if self.api_key and self.api_secret:
             self.api = krakenex.API(self.api_key, self.api_secret)

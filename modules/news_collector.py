@@ -25,7 +25,7 @@ class NewsCollector:
                  max_posts: int = 50,
                  analyze_sentiment: bool = True):
         
-        self.api_key = api_key or Config.CRYPTOPANIC_API_KEY
+        self.api_key = api_key or Config.get_api_key('CRYPTOPANIC_API_KEY')
         self.currencies = currencies or Config.DEFAULT_COINS[:10]
         self.max_posts = max_posts
         self.analyze_sentiment = analyze_sentiment
