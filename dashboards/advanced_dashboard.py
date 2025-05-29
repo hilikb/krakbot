@@ -309,7 +309,7 @@ class AdvancedTradingDashboard:
 
         # Initialize WebSocket if available
         if self.use_websocket and 'ws_collector' not in st.session_state:
-        self._init_websocket_collector()
+            self._init_websocket_collector()
 
     # הוספת מתודה חדשה:
     def _init_websocket_collector(self):
@@ -513,31 +513,35 @@ class AdvancedTradingDashboard:
     
     # עדכון display_header להוספת אינדיקטור WebSocket:
     def display_header(self):
-        """הצגת כותרת מקצועית עם WebSocket indicator"""
-        ws_status = ""
-        if self.use_websocket and st.session_state.get('ws_active'):
-            ws_status = """
-            <div class="live-indicator" style="position: absolute; top: 1rem; right: 1rem;">
-                <div class="live-dot"></div>
-                <span>WebSocket LIVE</span>
-            </div>
-            """
-    
+        """הצגת כותרת מקצועית עם אינדיקציה חיה לפי מצב WebSocket/HTTP"""
+        # הגדרה ברירת מחדל ל־ws_active
+        if 'ws_active' not in st.session_state:
+            st.session_state['ws_active'] = False
+
+        # קביעה של טקסט וצבע לפי מצב החיבור
+        if self.use_websocket and st.session_state['ws_active']:
+            status_label = "WebSocket LIVE"
+            dot_color = "#27ae60"  # ירוק
+        else:
+            status_label = "HTTP MODE"
+            dot_color = "#f39c12"  # כתום
+
+        # הצגת הכותרת עם אינדיקציה
         st.markdown(f"""
-        <div class="main-header" style="position: relative;">
-            {ws_status}
-            <h1 style="margin: 0; font-size: 2.5rem; font-weight: 800;">
-                💎 Kraken AI Trading System
-            </h1>
-            <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem; opacity: 0.9;">
-                Advanced Autonomous Trading Platform with Machine Learning
-            </p>
-            <div class="live-indicator" style="margin-top: 1rem;">
-                <div class="live-dot"></div>
-                <span>{'HYBRID MODE' if self.use_websocket else 'HTTP MODE'}</span>
+            <div class="main-header" style="position: relative; padding: 1rem 1rem 2rem 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); color: white;">
+                <div class="live-indicator" style="position: absolute; top: 1rem; right: 1rem; display: flex; align-items: center; gap: 8px;">
+                    <div class="live-dot" style="width: 12px; height: 12px; border-radius: 50%; background-color: {dot_color}; box-shadow: 0 0 8px {dot_color};"></div>
+                    <span style="font-weight: bold;">{status_label}</span>
+                </div>
+                <h1 style="margin: 0; font-size: 2.5rem; font-weight: 800;">
+                    💎 Kraken AI Trading System
+                </h1>
+                <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem; opacity: 0.95;">
+                    Advanced Autonomous Trading Platform with Machine Learning
+                </p>
             </div>
-        </div>
         """, unsafe_allow_html=True)
+
     
     def display_portfolio_section(self):
         """תצוגת פורטפוליו מתקדמת"""

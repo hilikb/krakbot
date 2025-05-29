@@ -77,8 +77,8 @@ st.markdown("""
 class KrakenDashboard:
     def __init__(self):
         self.api = None
-        if Config.KRAKEN_API_KEY and Config.KRAKEN_API_SECRET:
-            self.api = krakenex.API(Config.KRAKEN_API_KEY, Config.KRAKEN_API_SECRET)
+        if Config.get_api_key('KRAKEN_API_KEY') and Config.get_api_key('KRAKEN_API_SECRET'):
+            self.api = krakenex.API(Config.get_api_key('KRAKEN_API_KEY'), Config.get_api_key('KRAKEN_API_SECRET'))
         
         # WebSocket support
         self.use_websocket = WEBSOCKET_AVAILABLE and os.getenv('HYBRID_MODE', 'false').lower() == 'true'
@@ -95,8 +95,8 @@ class KrakenDashboard:
             symbols = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT']
             self.hybrid_collector = HybridMarketCollector(
                 symbols=symbols,
-                api_key=Config.KRAKEN_API_KEY,
-                api_secret=Config.KRAKEN_API_SECRET
+                api_key=Config.get_api_key('KRAKEN_API_KEY'),
+                api_secret=Config.get_api_key('KRAKEN_API_SECRET')
             )
             
             # הוספת callback

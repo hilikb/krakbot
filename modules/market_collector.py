@@ -1,4 +1,3 @@
-
 import os
 import sys
 import pandas as pd
@@ -792,7 +791,6 @@ def run_collector(interval: int = 30):
             start_time = time.time()
             
             # Get symbols to collect
-            symbols = Config.DEFAULT_COINS[:20] if hasattr(Config, 'DEFAULT_COINS') else ['BTC', 'ETH', 'SOL']
             # קבל את כל המטבעות הזמינים אם מוגדר כך
             max_symbols = getattr(Config, 'SYMBOL_CONFIG', {}).get('max_symbols', 600)
             all_available = collector.get_all_available_symbols()
@@ -801,3 +799,136 @@ def run_collector(interval: int = 30):
             
             # Collect data
             df = collector.collect_and_store_enhanced(symbols)
+            
+            if not df.empty:
+                logger.info(f"Collected data for {len(df)} symbols")
+                error_count = 0  # Reset error count on success
+            else:
+                logger.warning("No data collected in this cycle")
+            
+            # Dynamic sleep based on performance
+            elapsed = time.time() - start_time
+            sleep_time = max(0, interval - elapsed)
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                
+        except KeyboardInterrupt:
+            logger.info("Market collector stopped by user")
+            break
+            
+        except Exception as e:
+            error_count += 1
+            logger.error(f"Collection error ({error_count}/{max_errors}): {e}")
+            
+            if error_count >= max_errors:
+                logger.critical("Too many errors, stopping collector")
+                break
+            
+            time.sleep(interval * 2)  # Wait longer after error
+    
+    logger.info("Market collector shutdown complete")
+
+def test_collector():
+    """פונקציית בדיקה לאיסוף נתונים"""
+    print("\n📊 Testing Market Collector")
+    print("="*50)
+    
+    collector = MarketCollector()
+    
+    print("\n🔍 Testing basic functionality...")
+    
+    # Test symbol availability
+    symbols = collector.get_all_available_symbols()
+    print(f"✅ Available symbols: {len(symbols)}")
+    print(f"   Examples: {', '.join(symbols[:10])}")
+    
+    # Test price collection
+    test_symbols = ['BTC', 'ETH', 'SOL']
+    prices = collector.get_combined_prices(test_symbols)
+    
+    if prices:
+        print(f"\n✅ Price collection successful: {len(prices)} symbols")
+        for symbol, data in prices.items():
+            print(f"   {symbol}: ${data['price']:,.2f} ({data['change_pct_24h']:+.2f}%)")
+    else:
+        print("\n❌ Price collection failed")
+    
+    # Test data collection
+    print("\n🔄 Testing full data collection...")
+    df = collector.collect_and_store_enhanced(['BTC', 'ETH'])
+    
+    if not df.empty:
+        print(f"✅ Full collection successful: {len(df)} data points")
+        print(f"   Columns: {', '.join(df.columns)}")
+    else:
+        print("❌ Full collection failed")
+    
+    print("\n" + "="*50)
+    print("✅ Market collector test completed")
+
+# Main collection runner with enhanced features
+def run_enhanced_collector(interval: int = 30, max_symbols: int = 50):
+    """הפעלת איסוף משופר"""
+    collector = MarketCollector()
+    
+    logger.info(f"Enhanced market collector started - interval: {interval}s")
+    
+    error_count = 0
+    max_errors = 5
+    
+    while True:
+        try:
+            start_time = time.time()
+            
+            # Get available symbols (limited for performance)
+            symbols = Config.DEFAULT_COINS[:max_symbols] if hasattr(Config, 'DEFAULT_COINS') else ['BTC', 'ETH', 'SOL']
+            
+            # Collect data
+            df = collector.collect_and_store_enhanced(symbols)
+            
+            if not df.empty:
+                # Generate quality report every 10 collections
+                if collector.collection_stats['total_requests'] % 10 == 0:
+                    quality_report = collector.get_data_quality_report()
+                    logger.info(
+                        f"Quality Report - Avg Score: {quality_report.get('data_quality', {}).get('average_quality_score', 0):.2f}, "
+                        f"Records: {quality_report.get('data_quality', {}).get('total_records', 0)}"
+                    )
+                
+                # Cleanup old data periodically
+                if collector.collection_stats['total_requests'] % 100 == 0:
+                    collector.cleanup_old_data()
+                
+                error_count = 0  # Reset error count on success
+                
+            else:
+                logger.warning("No data collected in this cycle")
+            
+            # Dynamic sleep based on performance
+            elapsed = time.time() - start_time
+            sleep_time = max(0, interval - elapsed)
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                
+        except KeyboardInterrupt:
+            logger.info("Enhanced market collector stopped by user")
+            break
+            
+        except Exception as e:
+            error_count += 1
+            logger.error(f"Enhanced collection error ({error_count}/{max_errors}): {e}")
+            
+            if error_count >= max_errors:
+                logger.critical("Too many errors, stopping enhanced collector")
+                break
+            
+            time.sleep(interval * 2)  # Wait longer after error
+    
+    logger.info("Enhanced market collector shutdown complete")
+
+
+if __name__ == "__main__":
+    # הפעלת בדיקה אם מופעל ישירות
+    test_collector()

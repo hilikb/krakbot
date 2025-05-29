@@ -320,7 +320,7 @@ class OptimizedHTTPClient:
         retry_strategy = Retry(
             total=3,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "POST"],
+            method_whitelist=["HEAD", "GET", "POST"],
             backoff_factor=1
         )
         
@@ -892,8 +892,46 @@ def run_hybrid_collector(symbols: List[str] = None, api_key: str = None, api_sec
             logger.info(f"💰 [{collector.stats['total_updates']}] {price_update.symbol}: "
                        f"${price_update.price:,.2f} ({price_update.change_24h_pct:+.2f}%)")
     
-
+<<<<<<< HEAD
     collector.add_data_callback(on_price_update)
+=======
+    while True:
+        try:
+            start_time = time.time()
+            
+            # Get symbols to collect
+            symbols = Config.DEFAULT_COINS[:20] if hasattr(Config, 'DEFAULT_COINS') else ['BTC', 'ETH', 'SOL']
+            
+            # Collect data
+            df = collector.collect_and_store_enhanced(symbols)
+            
+            if not df.empty:
+                logger.info(f"Collected data for {len(df)} symbols")
+                error_count = 0  # Reset error count on success
+            else:
+                logger.warning("No data collected in this cycle")
+            
+            # Dynamic sleep based on performance
+            elapsed = time.time() - start_time
+            sleep_time = max(0, interval - elapsed)
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                
+        except KeyboardInterrupt:
+            logger.info("Market collector stopped by user")
+            break
+            
+        except Exception as e:
+            error_count += 1
+            logger.error(f"Collection error ({error_count}/{max_errors}): {e}")
+            
+            if error_count >= max_errors:
+                logger.critical("Too many errors, stopping collector")
+                break
+            
+            time.sleep(interval * 2)  # Wait longer after error
+>>>>>>> parent of 64e65c1 (Update market_collector.py)
     
     try:
         # Start collector
