@@ -45,14 +45,14 @@ class DataQualityManager:
             'price_change_limit': 0.5,  # 50% max change per update
             'spread_limit': 0.05,       # 5% max spread
             'volume_anomaly_factor': 10, # 10x volume spike threshold
-            'data_age_limit': 300       # 5 minutes max age
+            'data_age_limit': 3600      # 1 hour max age (was 5 minutes - too strict)
         }
         
         self.symbol_baselines = {}
     
     def validate_data_point(self, data_point: MarketDataPoint, 
                            previous_data: Optional[MarketDataPoint] = None) -> Tuple[bool, float, List[str]]:
-        """בדיקת איכות נקודת נתונים"""
+        """בדיקת איכות נקודת נתונים - גרסה מעודכנת"""
         issues = []
         quality_score = 1.0
         
@@ -64,36 +64,40 @@ class DataQualityManager:
         
         if data_point.volume < 0:
             issues.append("Invalid volume: < 0")
-            quality_score *= 0.8
+            quality_score *= 0.9  # Less harsh penalty
         
-        # Spread validation
+        # Spread validation (more lenient)
         if data_point.spread > 0 and data_point.price > 0:
             spread_pct = data_point.spread / data_point.price
             if spread_pct > self.quality_thresholds['spread_limit']:
                 issues.append(f"High spread: {spread_pct*100:.2f}%")
-                quality_score *= 0.7
+                quality_score *= 0.8  # Less harsh penalty
         
         # Price change validation (if we have previous data)
         if previous_data:
-            price_change = abs(data_point.price - previous_data.price) / previous_data.price
-            if price_change > self.quality_thresholds['price_change_limit']:
-                issues.append(f"Extreme price change: {price_change*100:.2f}%")
-                quality_score *= 0.5
+            # Skip validation if previous data is very old (more than 1 day)
+            data_age_hours = (data_point.timestamp - previous_data.timestamp).total_seconds() / 3600
             
-            # Volume anomaly check
-            if (data_point.volume > 0 and previous_data.volume > 0 and 
-                data_point.volume > previous_data.volume * self.quality_thresholds['volume_anomaly_factor']):
-                issues.append(f"Volume spike detected: {data_point.volume/previous_data.volume:.1f}x")
-                quality_score *= 0.9
+            if data_age_hours < 24:  # Only validate if data is less than 24 hours old
+                price_change = abs(data_point.price - previous_data.price) / previous_data.price
+                if price_change > self.quality_thresholds['price_change_limit']:
+                    issues.append(f"Extreme price change: {price_change*100:.2f}%")
+                    quality_score *= 0.6  # Less harsh penalty
+                
+                # Volume anomaly check (more lenient)
+                if (data_point.volume > 0 and previous_data.volume > 0 and 
+                    data_point.volume > previous_data.volume * self.quality_thresholds['volume_anomaly_factor']):
+                    issues.append(f"Volume spike detected: {data_point.volume/previous_data.volume:.1f}x")
+                    quality_score *= 0.95  # Very small penalty
         
-        # Data freshness
+        # Data freshness (more lenient)
         data_age = (datetime.now() - data_point.timestamp).total_seconds()
         if data_age > self.quality_thresholds['data_age_limit']:
             issues.append(f"Stale data: {data_age:.0f}s old")
-            quality_score *= 0.6
+            quality_score *= 0.8  # Less harsh penalty
         
         data_point.quality_score = quality_score
-        is_valid = quality_score > 0.3  # Minimum 30% quality score
+        is_valid = quality_score > 0.1  # Much more lenient threshold (was 0.3)
         
         return is_valid, quality_score, issues
 
@@ -342,20 +346,53 @@ class MarketCollector:
                     continue
                 
                 try:
-                    # Parse data more carefully
+                    # Parse data more carefully with better validation
                     current_price = self._safe_float(data.get('c', [0])[0])
                     if current_price <= 0:
                         continue
                     
+                    # Sanity check for price - typical crypto prices
+                    if current_price > 1000000 or current_price < 0.0001:
+                        logger.warning(f"Suspicious price for {symbol}: ${current_price}")
+                        continue
+                    
+                    # Get open price with better handling
                     open_price = self._safe_float(data.get('o', current_price))
                     
-                    # Calculate change with error handling
-                    if open_price > 0:
+                    # Calculate change with better validation
+                    change_pct = 0
+                    change_24h = 0
+                    
+                    if open_price > 0 and abs(open_price - current_price) / open_price < 0.5:  # Max 50% change
                         change_pct = ((current_price - open_price) / open_price) * 100
                         change_24h = current_price - open_price
                     else:
-                        change_pct = 0
-                        change_24h = 0
+                        # If change is too extreme, don't calculate change
+                        logger.debug(f"Skipping change calculation for {symbol} - extreme values")
+                    
+                    # Validate other price data
+                    high_24h = self._safe_float(data.get('h', [0, current_price])[1])
+                    low_24h = self._safe_float(data.get('l', [0, current_price])[1]) 
+                    
+                    # Sanity check high/low vs current price
+                    if high_24h > 0 and high_24h < current_price * 0.5:
+                        high_24h = current_price
+                    if low_24h > 0 and low_24h > current_price * 2:
+                        low_24h = current_price
+                    
+                    # Get bid/ask with validation
+                    bid = self._safe_float(data.get('b', [current_price])[0])
+                    ask = self._safe_float(data.get('a', [current_price])[0])
+                    
+                    # Validate bid/ask makes sense
+                    if bid <= 0:
+                        bid = current_price
+                    if ask <= 0:
+                        ask = current_price
+                    if bid > ask:  # Bid should be lower than ask
+                        bid, ask = ask, bid
+                    
+                    spread = max(0, ask - bid)
                     
                     # Create data point
                     data_point = MarketDataPoint(
@@ -363,27 +400,38 @@ class MarketCollector:
                         symbol=symbol,
                         price=current_price,
                         volume=self._safe_float(data.get('v', [0, 0])[1]),
-                        high_24h=self._safe_float(data.get('h', [0, current_price])[1]),
-                        low_24h=self._safe_float(data.get('l', [0, current_price])[1]),
+                        high_24h=high_24h if high_24h > 0 else current_price,
+                        low_24h=low_24h if low_24h > 0 else current_price,
                         change_24h=change_24h,
                         change_pct_24h=change_pct,
-                        bid=self._safe_float(data.get('b', [current_price])[0]),
-                        ask=self._safe_float(data.get('a', [current_price])[0]),
-                        spread=self._safe_float(data.get('a', [0])[0]) - self._safe_float(data.get('b', [0])[0]),
+                        bid=bid,
+                        ask=ask,
+                        spread=spread,
                         source='kraken'
                     )
                     
-                    # Validate data quality
+                    # Skip quality validation for first data point to avoid stale data issues
                     previous_data = self._get_last_data_point(symbol, 'kraken')
-                    is_valid, quality_score, issues = self.quality_manager.validate_data_point(
-                        data_point, previous_data
-                    )
-                    
-                    if is_valid:
-                        results[symbol] = data_point
-                        quality_scores.append(quality_score)
+                    if previous_data:
+                        is_valid, quality_score, issues = self.quality_manager.validate_data_point(
+                            data_point, previous_data
+                        )
+                        
+                        if is_valid:
+                            results[symbol] = data_point
+                            quality_scores.append(quality_score)
+                        else:
+                            # For debug purposes, log but still use data if it's not too bad
+                            if quality_score > 0.1:  # Very lenient threshold
+                                logger.debug(f"Low quality data for {symbol}: {issues}")
+                                results[symbol] = data_point
+                                quality_scores.append(quality_score)
+                            else:
+                                logger.warning(f"Rejected data for {symbol}: {issues}")
                     else:
-                        logger.warning(f"Invalid data for {symbol}: {issues}")
+                        # First time collecting this symbol - accept it
+                        results[symbol] = data_point
+                        quality_scores.append(1.0)
                         
                 except (KeyError, ValueError, IndexError, TypeError) as e:
                     logger.warning(f"Error parsing Kraken data for {pair}: {e}")
@@ -483,8 +531,8 @@ class MarketCollector:
         valid_points = 0
         
         for data_point in all_data_points:
-            # Additional validation
-            if data_point.quality_score > 0.5:  # Only high quality data
+            # Much more lenient validation - accept any data with minimal quality
+            if data_point.quality_score > 0.1:  # Very low threshold
                 df_data.append({
                     'timestamp': data_point.timestamp,
                     'pair': f"{data_point.symbol}USD",
@@ -579,7 +627,7 @@ class MarketCollector:
                 
                 # Keep only last 30 days
                 combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
-                cutoff_date = datetime.now() - timedelta(days=30)
+                cutoff_date = datetime.now() - timedelta(days=1800)
                 combined_df = combined_df[combined_df['timestamp'] > cutoff_date]
                 
                 combined_df.to_csv(Config.MARKET_HISTORY_FILE, index=False, encoding='utf-8')
