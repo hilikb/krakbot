@@ -845,7 +845,69 @@ class EnhancedTradingBotManager:
                 print(f"  • {filename:<25} | ❌ Not found  |           | {description}")
         
         input("\nPress Enter to continue...")
-    
+  
+    def _update_trading_symbols(self):
+        """ניהול סמלי מסחר"""
+        print("\n🪙 Symbol & Asset Manager")
+        print("="*40)
+        
+        # הצגת סמלים נוכחיים
+        print("\nCurrent Trading Symbols:")
+        current_symbols = Config.DEFAULT_COINS
+        for i, symbol in enumerate(current_symbols, 1):
+            print(f"  {i}. {symbol}")
+        
+        print("\nOptions:")
+        print("1. View all available symbols")
+        print("2. Add symbol to watchlist")
+        print("3. Remove symbol from watchlist")
+        print("4. Reset to default symbols")
+        print("5. Back to main menu")
+        
+        choice = input("\nYour choice: ").strip()
+        
+        if choice == "1":
+            # הצגת כל הסמלים הזמינים
+            print("\n📋 All Available Symbols:")
+            try:
+                if self.hybrid_collector:
+                    symbols = self.hybrid_collector.get_all_available_symbols()
+                else:
+                    from modules.market_collector import MarketCollector
+                    collector = MarketCollector()
+                    symbols = collector.get_all_available_symbols()
+                
+                for i, symbol in enumerate(symbols, 1):
+                    print(f"  {i}. {symbol}")
+                    if i % 10 == 0:
+                        print()  # רווח כל 10 סמלים
+            except Exception as e:
+                print(f"❌ Error getting symbols: {e}")
+        
+        elif choice == "2":
+            # הוספת סמל
+            new_symbol = input("\nEnter symbol to add (e.g., BTC): ").upper()
+            if new_symbol and new_symbol not in current_symbols:
+                current_symbols.append(new_symbol)
+                print(f"✅ Added {new_symbol} to watchlist")
+            else:
+                print("❌ Symbol already exists or invalid")
+        
+        elif choice == "3":
+            # הסרת סמל
+            remove_symbol = input("\nEnter symbol to remove: ").upper()
+            if remove_symbol in current_symbols:
+                current_symbols.remove(remove_symbol)
+                print(f"✅ Removed {remove_symbol} from watchlist")
+            else:
+                print("❌ Symbol not found")
+        
+        elif choice == "4":
+            # איפוס לברירת מחדל
+            Config.DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'MATIC', 'LINK', 'AVAX', 'XRP', 'ATOM']
+            print("✅ Reset to default symbols")
+        
+        input("\nPress Enter to continue...")
     def run_debug(self):
         """כלי debug עם בדיקות היברידיות"""
         print("\n🔧 System Diagnostics & Debug Tools")
