@@ -791,7 +791,11 @@ def run_collector(interval: int = 30):
             start_time = time.time()
             
             # Get symbols to collect
-            symbols = Config.DEFAULT_COINS[:20] if hasattr(Config, 'DEFAULT_COINS') else ['BTC', 'ETH', 'SOL']
+            # קבל את כל המטבעות הזמינים אם מוגדר כך
+            max_symbols = getattr(Config, 'SYMBOL_CONFIG', {}).get('max_symbols', 600)
+            all_available = collector.get_all_available_symbols()
+            symbols = all_available[:max_symbols] if len(all_available) > max_symbols else all_available
+            logger.info(f"📊 Collecting data for {len(symbols)} symbols")
             
             # Collect data
             df = collector.collect_and_store_enhanced(symbols)
