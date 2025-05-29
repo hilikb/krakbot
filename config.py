@@ -177,7 +177,7 @@ class AdvancedConfig:
                 ['BTC', 'ETH', 'SOL']),
             'excluded_symbols': self._load_symbol_list('EXCLUDED_SYMBOLS', 
                 ['LUNA', 'UST', 'FTT']),
-            'max_symbols': int(os.getenv('MAX_SYMBOLS', '50')),
+            'max_symbols': int(os.getenv('MAX_SYMBOLS', '600')),
             'symbol_rotation_enabled': os.getenv('SYMBOL_ROTATION', 'true').lower() == 'true'
         }
         
