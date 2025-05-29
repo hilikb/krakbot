@@ -10,3 +10,4 @@ logs/
 
 *.env
 .env
+/modules/__pycache__
