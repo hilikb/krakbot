@@ -578,7 +578,7 @@ class MarketCollector:
                 combined_df = combined_df.drop_duplicates(subset=['timestamp', 'symbol', 'source'], keep='last')
                 
                 # Keep only last 30 days
-                combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
+                combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
                 cutoff_date = datetime.now() - timedelta(days=30)
                 combined_df = combined_df[combined_df['timestamp'] > cutoff_date]
                 
