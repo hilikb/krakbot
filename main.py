@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Kraken Trading Bot v2.0 - Main Entry Point (Updated & Fixed)
-============================================================
-מערכת מסחר אוטומטית מתקדמת עם AI - גרסה מתוקנת
+Kraken Trading Bot v2.1 - Main Entry Point (Hybrid WebSocket + HTTP)
+====================================================================
+מערכת מסחר אוטומטית מתקדמת עם AI ואיסוף נתונים היברידי
 """
 
 import os
@@ -33,59 +33,65 @@ except ImportError:
     print("❌ Config module not found. Please ensure config.py exists.")
     sys.exit(1)
 
+# ייבוא המודול ההיברידי החדש
+try:
+    from modules.hybrid_market_collector import HybridMarketCollector, run_hybrid_collector, RealTimePriceUpdate
+    HYBRID_AVAILABLE = True
+    print("✅ Hybrid WebSocket + HTTP collector available")
+except ImportError as e:
+    print(f"⚠️  Hybrid collector not available: {e}")
+    HYBRID_AVAILABLE = False
+    # Fallback to original collector
+    try:
+        from modules.market_collector import MarketCollector, run_collector
+    except ImportError:
+        print("❌ No market collector available!")
+        sys.exit(1)
+
 # הגדרת לוגר
 logger = Config.setup_logging('main')
 
-class TradingBotManager:
-    """מנהל ראשי למערכת הבוט - גרסה מתוקנת"""
+class EnhancedTradingBotManager:
+    """מנהל ראשי למערכת הבוט עם תמיכה היברידית"""
     
     def __init__(self):
-        self.version = "2.0.1"
+        self.version = "2.1.0-hybrid"
         self.workers = {}
         self.processes = {}
         self.running = False
         self.mode = None
         
+        # Hybrid collector
+        self.hybrid_collector = None
+        
         # בדיקת סביבה מתקדמת
         self._check_environment()
         
     def _check_environment(self):
-        """בדיקת סביבת העבודה המתקדמת"""
+        """בדיקת סביבת עבודה עם תמיכה היברידית"""
         print("🔍 Checking system environment...")
         
         # בדיקת Python version
         if sys.version_info < (3, 8):
             print("⚠️  Warning: Python 3.8+ recommended")
         
-        # בדיקת תיקיות
-        required_dirs = {
-            'data': 'Data storage',
-            'logs': 'Log files', 
-            'modules': 'Core modules',
-            'dashboards': 'Dashboard files',
-            'models': 'ML models (optional)'
-        }
-        
-        for dir_name, description in required_dirs.items():
-            dir_path = os.path.join(BASE_DIR, dir_name)
-            if not os.path.exists(dir_path):
-                os.makedirs(dir_path, exist_ok=True)
-                logger.info(f"Created directory: {dir_name} ({description})")
-            else:
-                print(f"✅ {dir_name}/ - {description}")
-        
-        # בדיקת dependencies קריטיים
+        # בדיקת dependencies קריטיים עם WebSocket
         critical_packages = [
             ('pandas', 'Data manipulation'),
             ('numpy', 'Numerical computing'),
             ('krakenex', 'Kraken API'),
-            ('streamlit', 'Dashboard framework')
+            ('streamlit', 'Dashboard framework'),
+            ('websockets', 'WebSocket client'),
+            ('asyncio', 'Async support')
         ]
         
         missing_packages = []
         for package, description in critical_packages:
             try:
-                __import__(package)
+                if package == 'asyncio':
+                    import asyncio
+                else:
+                    __import__(package)
                 print(f"✅ {package} - {description}")
             except ImportError:
                 missing_packages.append(package)
@@ -93,18 +99,16 @@ class TradingBotManager:
         
         if missing_packages:
             print(f"\n⚠️  Missing packages: {', '.join(missing_packages)}")
-            print("Run: pip install -r requirements.txt")
+            if 'websockets' in missing_packages:
+                print("📦 Install WebSocket support: pip install websockets")
         
-        # בדיקת קבצי הגדרות
-        if not os.path.exists('.env'):
-            if os.path.exists('.env.example'):
-                print("⚠️  .env file not found. Copy .env.example to .env and add your keys.")
-            else:
-                self._create_env_example()
+        # בדיקת תכונות היברידיות
+        if HYBRID_AVAILABLE:
+            print("🚀 Hybrid WebSocket + HTTP collector: ✅ AVAILABLE")
         else:
-            print("✅ .env configuration file found")
+            print("⚠️  Hybrid collector: ❌ NOT AVAILABLE (fallback to HTTP only)")
         
-        # בדיקת מפתחות API - גרסה מתוקנת
+        # בדיקת מפתחות API
         try:
             api_status = Config.validate_keys()
             if api_status:
@@ -114,79 +118,60 @@ class TradingBotManager:
         except Exception as e:
             print(f"⚠️  Error checking API keys: {e}")
     
-    def _create_env_example(self):
-        """יצירת קובץ .env.example מתקדם"""
-        content = '''# Kraken API Credentials (Required for live trading)
-KRAKEN_API_KEY=your_kraken_api_key_here
-KRAKEN_API_SECRET=your_kraken_api_secret_here
-
-# Optional AI Features
-OPENAI_API_KEY=your_openai_key_here
-CRYPTOPANIC_API_KEY=your_cryptopanic_key_here
-
-# System Settings
-LOG_LEVEL=INFO
-DEMO_MODE=true
-AUTO_BACKUP=true
-
-# Trading Parameters
-DEFAULT_RISK_LEVEL=5
-MAX_DAILY_TRADES=20
-STOP_LOSS_PERCENT=5
-TAKE_PROFIT_PERCENT=10
-'''
-        
-        with open('.env.example', 'w') as f:
-            f.write(content)
-        logger.info("Created .env.example file")
-        print("✅ Created .env.example - copy to .env and configure")
-    
     def print_banner(self):
-        """הצגת באנר פתיחה משופר"""
+        """הצגת באנר פתיחה עם תכונות היברידיות"""
+        hybrid_status = "🚀 HYBRID MODE" if HYBRID_AVAILABLE else "📡 HTTP MODE"
+        
         banner = f"""
 ╔═══════════════════════════════════════════════════════════════╗
-║                  💎 Kraken Trading Bot v{self.version} 💎                  ║
+║                💎 Kraken Trading Bot v{self.version} 💎                ║
 ║                                                               ║
-║         🤖 Advanced AI-Powered Crypto Trading System         ║
-║              🚀 With Autonomous Trading Features             ║
+║        🤖 Advanced AI-Powered Crypto Trading System          ║
+║            {hybrid_status:<20} ⚡ Real-Time Data            ║
 ║                                                               ║
-║  📊 Real-time Data  🧠 ML Predictions  ⚡ Auto Trading      ║
+║  📊 Live Prices  🧠 ML Predictions  ⚡ Auto Trading         ║
 ╚═══════════════════════════════════════════════════════════════╝
         """
         print(banner)
     
     def show_menu(self):
-        """תפריט ראשי משופר עם בדיקת זמינות - גרסה מתוקנת"""
+        """תפריט ראשי עם אפשרויות היברידיות"""
         self.print_banner()
         
         print("\n🎯 Main Menu:")
         print("═" * 60)
         
-        # בדיקת זמינות features - גרסה מתוקנת
+        # בדיקת זמינות features
         features_status = self._check_features_availability()
         
         menu_options = [
             ("1", "🚀 Quick Start - Simple Dashboard", "simple_dashboard", True),
-            ("2", "📊 Data Collection System", "collect_data", features_status['data_collection']),
-            ("3", "🤖 AI Trading Dashboard", "ai_dashboard", features_status['ai_features']),
-            ("4", "🔄 Full System (All Components)", "full_system", features_status['full_system']),
-            ("5", "🧪 Trading Simulations", "simulations", features_status['simulations']),
-            ("6", "📈 Market Analysis Tools", "analysis", features_status['analysis']),
-            ("7", "⚙️  System Configuration", "settings", True),
-            ("8", "🪙 Symbol & Asset Manager", "symbols", features_status['data_collection']),
-            ("9", "🔧 Debug & Diagnostics", "debug", True),
-            ("10", "📚 Help & Documentation", "docs", True),
+            ("2", "📊 Hybrid Data Collection (WebSocket + HTTP)", "hybrid_collect_data", HYBRID_AVAILABLE),
+            ("3", "📈 Classic Data Collection (HTTP Only)", "collect_data", True),
+            ("4", "🤖 AI Trading Dashboard", "ai_dashboard", features_status['ai_features']),
+            ("5", "🔄 Full Hybrid System", "hybrid_full_system", HYBRID_AVAILABLE),
+            ("6", "🧪 Trading Simulations", "simulations", features_status['simulations']),
+            ("7", "📈 Market Analysis Tools", "analysis", features_status['analysis']),
+            ("8", "⚙️  System Configuration", "settings", True),
+            ("9", "🪙 Symbol & Asset Manager", "symbols", features_status['data_collection']),
+            ("10", "🔧 Debug & Diagnostics", "debug", True),
+            ("11", "📚 Help & Documentation", "docs", True),
             ("0", "🚪 Exit System", "exit", True)
         ]
         
         for key, desc, _, available in menu_options:
             status = "✅" if available else "❌"
             color = "" if available else " (unavailable)"
+            
+            # הדגשת אפשרויות היברידיות
+            if "Hybrid" in desc and available:
+                desc = f"🌟 {desc}"
+            
             print(f"  {key}. {status} {desc}{color}")
         
         print("\n" + "═" * 60)
         
-        # הצגת סטטוס מערכת
+        # הצגת סטטוס מערכת מעודכן
         self._show_system_status()
         
         choice = input("\n👉 Your choice: ").strip()
@@ -196,10 +181,11 @@ TAKE_PROFIT_PERCENT=10
         return choice_map.get(choice, "invalid")
     
     def _check_features_availability(self):
-        """בדיקת זמינות features - גרסה מתוקנת"""
+        """בדיקת זמינות features עם תמיכה היברידית"""
         status = {
             'data_collection': True,
-            'ai_features': bool(Config.get_api_key('OPENAI_API_KEY')),  # תוקן כאן!
+            'hybrid_collection': HYBRID_AVAILABLE,
+            'ai_features': bool(Config.get_api_key('OPENAI_API_KEY')),
             'simulations': True,
             'analysis': True,
             'full_system': True
@@ -207,11 +193,15 @@ TAKE_PROFIT_PERCENT=10
         
         # בדיקת modules זמינים
         try:
-            from market_collector import MarketCollector
-            status['data_collection'] = True
+            if HYBRID_AVAILABLE:
+                from hybrid_market_collector import HybridMarketCollector
+                status['hybrid_collection'] = True
+            else:
+                from market_collector import MarketCollector
+                status['data_collection'] = True
         except ImportError:
             status['data_collection'] = False
-            logger.warning("Market collector module not available")
+            status['hybrid_collection'] = False
         
         try:
             from ai_trading_engine import AITradingEngine
@@ -219,8 +209,9 @@ TAKE_PROFIT_PERCENT=10
         except ImportError:
             status['ai_features'] = False
         
-        status['full_system'] = all([
+        status['full_system'] = any([
             status['data_collection'],
+            status['hybrid_collection'],
             status['simulations'],
             status['analysis']
         ])
@@ -228,12 +219,18 @@ TAKE_PROFIT_PERCENT=10
         return status
     
     def _show_system_status(self):
-        """הצגת סטטוס מערכת - גרסה מתוקנת"""
+        """הצגת סטטוס מערכת עם מידע היברידי"""
         print("\n📊 System Status:")
         print(f"  • Version: {self.version}")
         print(f"  • Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # API Keys status - גרסה מתוקנת
+        # Collector status
+        if HYBRID_AVAILABLE:
+            print("  • Data Collection: 🚀 Hybrid Mode (WebSocket + HTTP)")
+        else:
+            print("  • Data Collection: 📡 HTTP Mode Only")
+        
+        # API Keys status
         kraken_key_status = Config.get_api_key_status('KRAKEN_API_KEY')
         openai_key_status = Config.get_api_key_status('OPENAI_API_KEY')
         
@@ -254,106 +251,123 @@ TAKE_PROFIT_PERCENT=10
         else:
             print("  • Data Files: None (will be created)")
     
-    def run_simple_dashboard(self):
-        """הפעלת דאשבורד פשוט עם בדיקות"""
-        dashboard_paths = [
-            os.path.join(DASHBOARDS_DIR, 'simple_dashboard.py'),
-            os.path.join(BASE_DIR, 'simple_dashboard.py'),
-            os.path.join(BASE_DIR, 'dashboards', 'simple_dashboard.py')
-        ]
-        
-        dashboard_path = None
-        for path in dashboard_paths:
-            if os.path.exists(path):
-                dashboard_path = path
-                break
-        
-        if not dashboard_path:
-            print("❌ Simple dashboard not found!")
-            print("Expected locations:")
-            for path in dashboard_paths:
-                print(f"  - {path}")
+    def run_hybrid_data_collection(self):
+        """הפעלת איסוף נתונים היברידי חדש"""
+        if not HYBRID_AVAILABLE:
+            print("❌ Hybrid collection not available. Falling back to HTTP collection.")
+            self.run_data_collection()
             return
         
-        print("\n🚀 Starting Simple Dashboard...")
-        print(f"📍 Location: {dashboard_path}")
-        print("🌐 Opening browser at http://localhost:8501")
-        print("⏹️  Press Ctrl+C to stop")
+        print("\n🚀 Starting Hybrid Data Collection System...")
+        print("📡 WebSocket: Real-time price updates")
+        print("🌐 HTTP: Account data, history, fallback")
         
+        # בחירת סמלים
+        max_symbols = 20  # מגבלה לביצועים
+        available_symbols = Config.DEFAULT_COINS[:max_symbols]
+        
+        print(f"\n📊 Tracking {len(available_symbols)} symbols:")
+        print(f"   {', '.join(available_symbols[:10])}{'...' if len(available_symbols) > 10 else ''}")
+        
+        # התחלת collector
         try:
-            # בדיקת streamlit
-            import streamlit
+            print("\n⏳ Initializing hybrid collector...")
             
-            process = subprocess.Popen([
-                sys.executable, "-m", "streamlit", "run", dashboard_path,
-                "--server.headless", "false",
-                "--server.port", "8501",
-                "--server.address", "localhost"
-            ])
-            
-            self.processes['dashboard'] = process
-            
-            print("\n✅ Dashboard is running!")
-            print("   • URL: http://localhost:8501")
-            print("   • Press Ctrl+C to stop")
-            
-            try:
-                process.wait()
-            except KeyboardInterrupt:
-                print("\n⏹️  Stopping dashboard...")
-                process.terminate()
-                process.wait(timeout=5)
+            # יצירת callback לניטור
+            def on_price_update(price_update: RealTimePriceUpdate):
+                if hasattr(on_price_update, 'counter'):
+                    on_price_update.counter += 1
+                else:
+                    on_price_update.counter = 1
                 
-        except ImportError:
-            print("❌ Streamlit not installed. Run: pip install streamlit")
+                # הדפסה כל 50 עדכונים כדי לא לספאם
+                if on_price_update.counter % 50 == 0:
+                    print(f"💰 [{on_price_update.counter}] {price_update.symbol}: "
+                          f"${price_update.price:,.2f} ({price_update.change_24h_pct:+.2f}%) "
+                          f"[{price_update.source}]")
+            
+            # יצירת ה-collector
+            self.hybrid_collector = HybridMarketCollector(
+                symbols=available_symbols,
+                api_key=Config.get_api_key('KRAKEN_API_KEY'),
+                api_secret=Config.get_api_key('KRAKEN_API_SECRET')
+            )
+            
+            # הוספת callback
+            self.hybrid_collector.add_data_callback(on_price_update)
+            
+            # התחלה
+            self.hybrid_collector.start()
+            
+            print("✅ Hybrid collector started successfully!")
+            print("\n📊 Collection Status:")
+            print("  • WebSocket: Connecting to Kraken...")
+            print("  • HTTP: Ready for fallback and account data")
+            print("  • Database: Storing all updates")
+            print("  • CSV Files: Updated for compatibility")
+            
+            print("\n⏹️  Press Ctrl+C to stop collection")
+            
+            # לולאת ניטור
+            while True:
+                time.sleep(30)  # כל 30 שניות
+                
+                stats = self.hybrid_collector.get_statistics()
+                current_time = datetime.now().strftime('%H:%M:%S')
+                
+                print(f"\n[{current_time}] 📊 Hybrid Collection Stats:")
+                print(f"  • Total Updates: {stats['total_updates']}")
+                print(f"  • WebSocket Updates: {stats['websocket_updates']}")
+                print(f"  • HTTP Updates: {stats['http_updates']}")
+                print(f"  • Updates/Min: {stats.get('updates_per_minute', 0):.1f}")
+                print(f"  • WebSocket Status: {stats['websocket_status']}")
+                print(f"  • Active Symbols: {stats['active_symbols']}/{len(available_symbols)}")
+                
+        except KeyboardInterrupt:
+            print("\n⏹️  Stopping hybrid collection...")
         except Exception as e:
-            print(f"❌ Error starting dashboard: {e}")
+            print(f"❌ Error in hybrid collection: {e}")
+            logger.error(f"Hybrid collection error: {e}")
+        finally:
+            if self.hybrid_collector:
+                self.hybrid_collector.stop()
+                print("✅ Hybrid collector stopped")
     
     def run_data_collection(self):
-        """הפעלת איסוף נתונים עם error handling"""
-        print("\n📊 Initializing Data Collection System...")
+        """הפעלת איסוף נתונים קלאסי (HTTP בלבד)"""
+        print("\n📊 Starting Classic Data Collection System (HTTP)...")
         
-        # בדיקת modules
-        modules_status = {}
-        
+        # ייבוא המודול הקלאסי
         try:
-            from market_collector import MarketCollector, run_collector
-            modules_status['market'] = True
-            print("✅ Market collector available")
-        except ImportError as e:
-            modules_status['market'] = False
-            print(f"❌ Market collector error: {e}")
-        
-        try:
-            from news_collector import NewsCollector, run_news_monitor
-            modules_status['news'] = True
-            print("✅ News collector available")
-        except ImportError as e:
-            modules_status['news'] = False
-            print(f"❌ News collector error: {e}")
-        
-        if not any(modules_status.values()):
-            print("❌ No collection modules available")
+            from modules.market_collector import MarketCollector, run_collector
+        except ImportError:
+            print("❌ Classic market collector not available")
             return
+        
+        try:
+            from modules.news_collector import run_news_monitor
+            news_available = True
+        except ImportError:
+            news_available = False
+            print("⚠️  News collector not available")
         
         print("\n🔄 Starting collection processes...")
         
         # Market Collector
-        if modules_status['market']:
-            def run_market_collector():
-                try:
-                    print("📊 Market Collector: Starting...")
-                    run_collector(interval=30)
-                except Exception as e:
-                    logger.error(f"Market Collector error: {e}")
-                    print(f"❌ Market Collector failed: {e}")
-            
-            market_thread = threading.Thread(target=run_market_collector, daemon=True)
-            market_thread.start()
-            print("✅ Market data collection started (30s intervals)")
+        def run_market_collector():
+            try:
+                print("📊 Market Collector: Starting...")
+                run_collector(interval=30)
+            except Exception as e:
+                logger.error(f"Market Collector error: {e}")
+                print(f"❌ Market Collector failed: {e}")
+        
+        market_thread = threading.Thread(target=run_market_collector, daemon=True)
+        market_thread.start()
+        print("✅ Market data collection started (30s intervals)")
         
         # News Collector
-        if modules_status['news']:
+        if news_available:
             def run_news_collector():
                 try:
                     print("📰 News Collector: Starting...")
@@ -363,107 +377,64 @@ TAKE_PROFIT_PERCENT=10
                     print(f"❌ News Collector failed: {e}")
             
             news_thread = threading.Thread(target=run_news_collector, daemon=True)
-            news_thread.start()  
+            news_thread.start()
             print("✅ News collection started (5min intervals)")
         
-        print("\n📊 Data Collection Status:")
+        print("\n📊 Classic Collection Status:")
         print("  • Market data: Every 30 seconds")
-        print("  • News feed: Every 5 minutes")
+        if news_available:
+            print("  • News feed: Every 5 minutes")
         print("  • Files saved to: data/")
         print("\n⏹️  Press Ctrl+C to stop all collection")
         
         try:
             while True:
-                time.sleep(10)
+                time.sleep(30)
                 current_time = datetime.now().strftime('%H:%M:%S')
-                print(f"[{current_time}] ⚡ System running... (Ctrl+C to stop)")
+                print(f"[{current_time}] ⚡ Classic collection running... (Ctrl+C to stop)")
         except KeyboardInterrupt:
-            print("\n⏹️  Stopping data collection...")
+            print("\n⏹️  Stopping classic data collection...")
             print("✅ Collection stopped")
     
-    def run_ai_dashboard(self):
-        """הפעלת דאשבורד AI מתקדם"""
-        ai_dashboard_paths = [
-            os.path.join(DASHBOARDS_DIR, 'advanced_dashboard.py'),
-            os.path.join(BASE_DIR, 'advanced_dashboard.py')
-        ]
-        
-        dashboard_path = None
-        for path in ai_dashboard_paths:
-            if os.path.exists(path):
-                dashboard_path = path
-                break
-        
-        if not dashboard_path:
-            print("❌ AI Dashboard not found, falling back to simple dashboard...")
-            self.run_simple_dashboard()
+    def run_hybrid_full_system(self):
+        """הפעלת מערכת היברידית מלאה"""
+        if not HYBRID_AVAILABLE:
+            print("❌ Hybrid mode not available. Falling back to classic full system.")
+            self.run_full_system()
             return
         
-        print("\n🤖 Starting AI Trading Dashboard...")
-        print("⚠️  Warning: This includes autonomous trading features!")
+        print("\n🚀 Starting Full Hybrid Trading System...")
+        print("=" * 60)
         
-        # בדיקת API keys - גרסה מתוקנת
-        if not Config.get_api_key('KRAKEN_API_KEY'):
-            print("⚠️  Note: No API keys - running in demo mode")
-        
-        confirm = input("\nContinue? (yes/no): ").lower()
-        if confirm not in ['yes', 'y']:
-            return
-        
-        try:
-            process = subprocess.Popen([
-                sys.executable, "-m", "streamlit", "run", dashboard_path,
-                "--server.port", "8502"  # Different port for AI dashboard
-            ])
-            
-            self.processes['ai_dashboard'] = process
-            
-            print("\n✅ AI Dashboard is running!")
-            print("🌐 Open browser at http://localhost:8502")
-            
-            try:
-                process.wait()
-            except KeyboardInterrupt:
-                print("\n⏹️  Stopping AI dashboard...")
-                process.terminate()
-                
-        except Exception as e:
-            print(f"❌ Error starting AI dashboard: {e}")
-            print("Falling back to simple dashboard...")
-            self.run_simple_dashboard()
-    
-    def run_full_system(self):
-        """הפעלת מערכת מלאה עם ניהול תהליכים"""
-        print("\n🚀 Starting Full Trading System...")
-        print("="*50)
+        print("🌟 Hybrid Features:")
+        print("  • Real-time WebSocket price feeds")
+        print("  • HTTP fallback and account data")
+        print("  • Advanced AI trading engine")
+        print("  • Interactive dashboards")
+        print("  • Autonomous trading capabilities")
         
         # בדיקת דרישות
-        print("🔍 Checking system requirements...")
-        
         required_features = self._check_features_availability()
-        missing_features = [k for k, v in required_features.items() if not v]
+        missing_features = [k for k, v in required_features.items() if not v and k != 'data_collection']
         
         if missing_features:
             print(f"⚠️  Some features unavailable: {', '.join(missing_features)}")
-            print("System will run with available features only.")
-            
-            proceed = input("\nContinue? (yes/no): ").lower()
+            proceed = input("\nContinue with available features? (yes/no): ").lower()
             if proceed not in ['yes', 'y']:
                 return
         
         processes = []
         
         try:
-            # 1. Start data collection
-            if required_features['data_collection']:
-                print("\n📊 Starting data collection...")
-                data_thread = threading.Thread(
-                    target=self.run_data_collection_background, 
-                    daemon=True
-                )
-                data_thread.start()
-                processes.append(('Data Collection', data_thread))
-                time.sleep(2)  # Stagger startup
+            # 1. Start hybrid data collection
+            print("\n🚀 Starting hybrid data collection...")
+            data_thread = threading.Thread(
+                target=self._run_hybrid_data_background,
+                daemon=True
+            )
+            data_thread.start()
+            processes.append(('Hybrid Data Collection', data_thread))
+            time.sleep(3)  # Allow time to initialize
             
             # 2. Start dashboard
             print("\n🖥️  Starting dashboard...")
@@ -483,9 +454,112 @@ TAKE_PROFIT_PERCENT=10
                 )
                 ai_thread.start()
                 processes.append(('AI Dashboard', ai_thread))
-
             
-            print("\n✅ Full system started!")
+            print("\n✅ Full hybrid system started!")
+            print("📊 Components running:")
+            for name, _ in processes:
+                print(f"  • {name}")
+            
+            print("\n🌐 Access points:")
+            print("  • Main Dashboard: http://localhost:8501")
+            print("  • AI Dashboard: http://localhost:8502")
+            
+            print("\n⏹️  Press Ctrl+C to stop all components")
+            
+            # Keep main thread alive with status updates
+            while True:
+                time.sleep(60)
+                current_time = datetime.now().strftime('%H:%M:%S')
+                
+                # Get hybrid stats if available
+                status_info = ""
+                if self.hybrid_collector:
+                    try:
+                        stats = self.hybrid_collector.get_statistics()
+                        status_info = f" | Updates: {stats['total_updates']} | WS: {stats['websocket_status']}"
+                    except:
+                        pass
+                
+                print(f"[{current_time}] 🔄 Full hybrid system running{status_info}...")
+        
+        except KeyboardInterrupt:
+            print("\n⏹️  Shutting down full hybrid system...")
+            self._cleanup_processes()
+            print("✅ Full hybrid system stopped")
+    
+    def _run_hybrid_data_background(self):
+        """איסוף נתונים היברידי ברקע"""
+        try:
+            symbols = Config.DEFAULT_COINS[:15]  # מגבלה לביצועים
+            
+            self.hybrid_collector = HybridMarketCollector(
+                symbols=symbols,
+                api_key=Config.get_api_key('KRAKEN_API_KEY'),
+                api_secret=Config.get_api_key('KRAKEN_API_SECRET')
+            )
+            
+            self.hybrid_collector.start()
+            
+            # Keep the collector running
+            while True:
+                time.sleep(60)
+                
+        except Exception as e:
+            logger.error(f"Background hybrid data collection error: {e}")
+    
+    def run_full_system(self):
+        """הפעלת מערכת קלאסית מלאה"""
+        print("\n🚀 Starting Full Classic Trading System...")
+        print("="*50)
+        
+        # בדיקת דרישות
+        print("🔍 Checking system requirements...")
+        
+        required_features = self._check_features_availability()
+        missing_features = [k for k, v in required_features.items() if not v]
+        
+        if missing_features:
+            print(f"⚠️  Some features unavailable: {', '.join(missing_features)}")
+            print("System will run with available features only.")
+            
+            proceed = input("\nContinue? (yes/no): ").lower()
+            if proceed not in ['yes', 'y']:
+                return
+        
+        processes = []
+        
+        try:
+            # 1. Start classic data collection
+            if required_features['data_collection']:
+                print("\n📊 Starting classic data collection...")
+                data_thread = threading.Thread(
+                    target=self.run_data_collection_background,
+                    daemon=True
+                )
+                data_thread.start()
+                processes.append(('Data Collection', data_thread))
+                time.sleep(2)
+            
+            # 2. Start dashboard
+            print("\n🖥️  Starting dashboard...")
+            dashboard_thread = threading.Thread(
+                target=self.run_dashboard_background,
+                daemon=True
+            )
+            dashboard_thread.start()
+            processes.append(('Dashboard', dashboard_thread))
+            
+            # 3. Start AI dashboard if available
+            if required_features['ai_features']:
+                print("\n🤖 Starting AI dashboard...")
+                ai_thread = threading.Thread(
+                    target=self.run_ai_dashboard_background,
+                    daemon=True
+                )
+                ai_thread.start()
+                processes.append(('AI Dashboard', ai_thread))
+            
+            print("\n✅ Full classic system started!")
             print("📊 Components running:")
             for name, _ in processes:
                 print(f"  • {name}")
@@ -499,17 +573,17 @@ TAKE_PROFIT_PERCENT=10
             # Keep main thread alive
             while True:
                 time.sleep(30)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Full system running...")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Full classic system running...")
                 
         except KeyboardInterrupt:
-            print("\n⏹️  Shutting down full system...")
+            print("\n⏹️  Shutting down full classic system...")
             self._cleanup_processes()
-            print("✅ Full system stopped")
+            print("✅ Full classic system stopped")
     
     def run_data_collection_background(self):
-        """איסוף נתונים ברקע"""
+        """איסוף נתונים קלאסי ברקע"""
         try:
-            from market_collector import run_collector
+            from modules.market_collector import run_collector
             run_collector(interval=30)
         except Exception as e:
             logger.error(f"Background data collection error: {e}")
@@ -543,94 +617,182 @@ TAKE_PROFIT_PERCENT=10
             ])
         except Exception as e:
             logger.error(f"Background AI dashboard error: {e}")
-
+    
+    def run_simple_dashboard(self):
+        """הפעלת דאשבורד פשוט עם תמיכה היברידית"""
+        dashboard_paths = [
+            os.path.join(DASHBOARDS_DIR, 'simple_dashboard.py'),
+            os.path.join(BASE_DIR, 'simple_dashboard.py'),
+            os.path.join(BASE_DIR, 'dashboards', 'simple_dashboard.py')
+        ]
+        
+        dashboard_path = None
+        for path in dashboard_paths:
+            if os.path.exists(path):
+                dashboard_path = path
+                break
+        
+        if not dashboard_path:
+            print("❌ Simple dashboard not found!")
+            return
+        
+        print("\n🚀 Starting Simple Dashboard...")
+        print(f"📍 Location: {dashboard_path}")
+        
+        # הוסף משתני סביבה לדאשבורד
+        env = os.environ.copy()
+        if HYBRID_AVAILABLE:
+            env['HYBRID_MODE'] = 'true'
+        
+        print("🌐 Opening browser at http://localhost:8501")
+        print("⏹️  Press Ctrl+C to stop")
+        
+        try:
+            import streamlit
+            
+            process = subprocess.Popen([
+                sys.executable, "-m", "streamlit", "run", dashboard_path,
+                "--server.headless", "false",
+                "--server.port", "8501",
+                "--server.address", "localhost"
+            ], env=env)
+            
+            self.processes['dashboard'] = process
+            
+            print("\n✅ Dashboard is running!")
+            print("   • URL: http://localhost:8501")
+            if HYBRID_AVAILABLE:
+                print("   • Mode: 🚀 Hybrid (WebSocket + HTTP)")
+            else:
+                print("   • Mode: 📡 HTTP Only")
+            print("   • Press Ctrl+C to stop")
+            
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                print("\n⏹️  Stopping dashboard...")
+                process.terminate()
+                process.wait(timeout=5)
+                
+        except ImportError:
+            print("❌ Streamlit not installed. Run: pip install streamlit")
+        except Exception as e:
+            print(f"❌ Error starting dashboard: {e}")
+    
     def run_simulations(self):
         """הפעלת סימולציות"""
         print("\n🧪 Trading Simulation System")
         print("="*40)
         
         try:
-            from simulation_runner import main_menu
+            from modules.simulation_runner import main_menu
             main_menu()
         except ImportError:
             print("❌ Simulation module not found")
             print("Running basic parameter optimization...")
             
             try:
-                from simulation_core import optimize_simulation_params
+                from modules.simulation_core import optimize_simulation_params
                 print("\n📊 Running parameter optimization...")
                 optimize_simulation_params()
             except ImportError:
                 print("❌ Simulation core not available")
-                print("Please ensure simulation modules are in modules/ directory")
     
     def show_analysis(self):
-        """הצגת ניתוח שוק"""
+        """הצגת ניתוח שוק עם נתונים היברידיים"""
         print("\n📈 Market Analysis Tools")
         print("="*40)
         
         try:
-            from market_collector import MarketCollector
-            
-            print("🔍 Initializing market analyzer...")
-            collector = MarketCollector()
-            
-            # בדיקת זמינות נתונים
-            symbols = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT']
-            print(f"📊 Analyzing {len(symbols)} major assets...")
-            
-            prices = collector.get_combined_prices(symbols)
-            
-            if prices:
-                print("\n💰 Current Market Status:")
-                print("-" * 50)
+            if HYBRID_AVAILABLE and self.hybrid_collector:
+                print("🚀 Using Hybrid Data (Real-time)")
                 
-                for symbol, data in prices.items():
-                    price = data['price']
-                    change = data.get('change_pct_24h', 0)
-                    volume = data.get('volume', 0)
+                # קבלת נתונים מה-collector ההיברידי
+                latest_prices = self.hybrid_collector.get_latest_prices()
+                
+                if latest_prices:
+                    print("\n💰 Real-Time Market Status:")
+                    print("-" * 60)
                     
-                    change_symbol = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+                    for symbol, price_data in list(latest_prices.items())[:10]:
+                        change_symbol = "🟢" if price_data.change_24h_pct > 0 else "🔴" if price_data.change_24h_pct < 0 else "⚪"
+                        
+                        print(f"{change_symbol} {symbol:6} | ${price_data.price:>12,.2f} | "
+                              f"{price_data.change_24h_pct:>+6.2f}% | "
+                              f"Vol: {price_data.volume:>12,.0f} | "
+                              f"[{price_data.source}]")
                     
-                    print(f"{change_symbol} {symbol:6} | ${price:>10,.2f} | {change:>+6.2f}% | Vol: ${volume:>10,.0f}")
-            
-                # Market summary
-                avg_change = sum(data.get('change_pct_24h', 0) for data in prices.values()) / len(prices)
-                total_volume = sum(data.get('volume', 0) for data in prices.values())
-                
-                print("\n📊 Market Summary:")
-                print(f"  • Average Change: {avg_change:+.2f}%")
-                print(f"  • Total Volume: ${total_volume:,.0f}")
-                print(f"  • Market Sentiment: {'Bullish' if avg_change > 0 else 'Bearish'}")
-                
+                    # סטטיסטיקות
+                    stats = self.hybrid_collector.get_statistics()
+                    print(f"\n📊 Collection Stats:")
+                    print(f"  • Total Updates: {stats['total_updates']}")
+                    print(f"  • WebSocket Status: {stats['websocket_status']}")
+                    print(f"  • Updates per Minute: {stats.get('updates_per_minute', 0):.1f}")
+                    
+                else:
+                    print("❌ No real-time data available yet")
+                    
             else:
-                print("❌ No market data available")
-                print("💡 Try running data collection first (option 2)")
+                # Fallback לcollector קלאסי
+                print("📡 Using Classic Data Collection")
                 
-        except ImportError:
-            print("❌ Market analysis modules not available")
+                try:
+                    from modules.market_collector import MarketCollector
+                    
+                    collector = MarketCollector()
+                    symbols = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT']
+                    prices = collector.get_combined_prices(symbols)
+                    
+                    if prices:
+                        print("\n💰 Current Market Status:")
+                        print("-" * 50)
+                        
+                        for symbol, data in prices.items():
+                            price = data['price']
+                            change = data.get('change_pct_24h', 0)
+                            volume = data.get('volume', 0)
+                            
+                            change_symbol = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+                            
+                            print(f"{change_symbol} {symbol:6} | ${price:>10,.2f} | {change:>+6.2f}% | Vol: ${volume:>10,.0f}")
+                    
+                        # Market summary
+                        avg_change = sum(data.get('change_pct_24h', 0) for data in prices.values()) / len(prices)
+                        total_volume = sum(data.get('volume', 0) for data in prices.values())
+                        
+                        print("\n📊 Market Summary:")
+                        print(f"  • Average Change: {avg_change:+.2f}%")
+                        print(f"  • Total Volume: ${total_volume:,.0f}")
+                        print(f"  • Market Sentiment: {'Bullish' if avg_change > 0 else 'Bearish'}")
+                    
+                    else:
+                        print("❌ No market data available")
+                        print("💡 Try running data collection first")
+                        
+                except ImportError:
+                    print("❌ Market analysis modules not available")
+                
         except Exception as e:
             print(f"❌ Analysis error: {e}")
         
         input("\nPress Enter to continue...")
     
-    def _cleanup_processes(self):
-        """ניקוי תהליכים"""
-        for name, process in self.processes.items():
-            if process and process.poll() is None:
-                logger.info(f"Terminating {name}")
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-    
     def show_settings(self):
-        """הצגת הגדרות מערכת מתקדמת - גרסה מתוקנת"""
+        """הגדרות מערכת עם אפשרויות היברידיות"""
         print("\n⚙️  System Settings & Configuration")
         print("="*60)
         
-        # API Keys Status - גרסה מתוקנת
+        # System Mode
+        print("\n🚀 System Mode:")
+        if HYBRID_AVAILABLE:
+            print("  • Data Collection: 🌟 Hybrid Mode Available")
+            print("    - WebSocket: Real-time price feeds")
+            print("    - HTTP: Account data, history, fallback")
+        else:
+            print("  • Data Collection: 📡 HTTP Mode Only")
+            print("    - Missing: websockets package")
+        
+        # API Keys Status
         print("\n🔑 API Configuration:")
         api_keys = [
             ('Kraken API Key', 'KRAKEN_API_KEY', 'Required for live trading'),
@@ -645,13 +807,13 @@ TAKE_PROFIT_PERCENT=10
             masked_key = key_status.get('masked_value', 'Not set')
             print(f"  • {name:<20} | {status:<12} | {masked_key:<15} | {description}")
         
-        # Trading Parameters - גרסה מתוקנת
+        # Trading Parameters
         print("\n💰 Trading Parameters:")
         default_params = Config.DEFAULT_TRADING_PARAMS
         for key, value in default_params.items():
             print(f"  • {key:<20} | {value}")
         
-        # System Status
+        # System Information
         print("\n🖥️  System Information:")
         print(f"  • Python Version    | {sys.version.split()[0]}")
         print(f"  • Working Directory | {BASE_DIR}")
@@ -659,11 +821,15 @@ TAKE_PROFIT_PERCENT=10
         print(f"  • Data Directory    | {Config.DATA_DIR}")
         print(f"  • Logs Directory    | {Config.LOGS_DIR}")
         
+        # WebSocket Support
+        print(f"  • WebSocket Support | {'✅ Available' if HYBRID_AVAILABLE else '❌ Missing'}")
+        
         # File Status
         print("\n📁 Data Files Status:")
         data_files = [
             ('market_live.csv', 'Live market data'),
             ('market_history.csv', 'Historical market data'), 
+            ('hybrid_market_data.db', 'Hybrid database'),
             ('news_feed.csv', 'News and sentiment'),
             ('simulation_log.csv', 'Trading simulations'),
             ('trading_log.csv', 'Live trading history')
@@ -674,114 +840,36 @@ TAKE_PROFIT_PERCENT=10
             if os.path.exists(path):
                 size = os.path.getsize(path) / 1024  # KB
                 age_hours = (time.time() - os.path.getmtime(path)) / 3600
-                print(f"  • {filename:<20} | ✅ {size:>7.1f} KB | {age_hours:>5.1f}h old | {description}")
+                print(f"  • {filename:<25} | ✅ {size:>7.1f} KB | {age_hours:>5.1f}h old | {description}")
             else:
-                print(f"  • {filename:<20} | ❌ Not found  |           | {description}")
-        
-        input("\nPress Enter to continue...")
-    
-    def _update_trading_symbols(self):
-        """עדכון רשימת מטבעות למסחר - גרסה מתוקנת"""
-        print("\n🪙 Symbol & Asset Manager")
-        print("="*50)
-        
-        try:
-            from market_collector import MarketCollector
-            
-            print("\n1. View current symbol configuration")
-            print("2. Update symbol list from Kraken")
-            print("3. Set custom symbol list")
-            print("4. Reset to default symbols")
-            print("5. Test symbol connectivity")
-            
-            choice = input("\nChoice: ").strip()
-            
-            if choice == '1':
-                # הצגת הגדרות נוכחיות - גרסה מתוקנת
-                print(f"\n📊 Current Configuration:")
-                print(f"  • Use all symbols: {Config.TRADING_SETTINGS.get('use_all_symbols', False)}")
-                print(f"  • Max symbols: {Config.TRADING_SETTINGS.get('max_symbols', 50)}")
-                print(f"  • Priority symbols: {', '.join(Config.TRADING_SETTINGS.get('priority_symbols', []))}")
-                print(f"  • Default coins: {', '.join(Config.DEFAULT_COINS)}")
-                
-            elif choice == '2':
-                # עדכון מ-Kraken
-                collector = MarketCollector()
-                print("\n⏳ Fetching available symbols from Kraken...")
-                
-                try:
-                    symbols = collector.get_all_available_symbols()
-                    print(f"\n✅ Found {len(symbols)} available symbols")
-                    print(f"Examples: {', '.join(symbols[:10])}...")
-                    
-                    if input("\nUpdate system to use all available symbols? (y/n): ").lower() == 'y':
-                        Config.TRADING_SETTINGS['use_all_symbols'] = True
-                        print("✅ Updated to use all available symbols")
-                except Exception as e:
-                    print(f"❌ Error fetching symbols: {e}")
-                
-            elif choice == '3':
-                # רשימה מותאמת
-                print("\nEnter symbols separated by commas (e.g., BTC,ETH,SOL):")
-                custom_input = input("> ").upper().strip()
-                
-                if custom_input:
-                    custom_symbols = [s.strip() for s in custom_input.split(',')]
-                    Config.DEFAULT_COINS = custom_symbols
-                    Config.TRADING_SETTINGS['use_all_symbols'] = False
-                    print(f"\n✅ Set {len(custom_symbols)} custom symbols: {', '.join(custom_symbols)}")
-                
-            elif choice == '4':
-                # איפוס לברירת מחדל
-                Config.DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'MATIC', 'LINK', 'AVAX', 'XRP']
-                Config.TRADING_SETTINGS['use_all_symbols'] = False
-                print(f"\n✅ Reset to default symbols: {', '.join(Config.DEFAULT_COINS)}")
-                
-            elif choice == '5':
-                # בדיקת קישוריות
-                collector = MarketCollector()
-                test_symbols = Config.DEFAULT_COINS[:5]
-                
-                print(f"\n🔍 Testing connectivity for: {', '.join(test_symbols)}")
-                
-                try:
-                    prices = collector.get_combined_prices(test_symbols)
-                    
-                    if prices:
-                        print("\n✅ Connectivity test successful:")
-                        for symbol, data in prices.items():
-                            print(f"  • {symbol}: ${data['price']:,.2f}")
-                    else:
-                        print("\n❌ Connectivity test failed")
-                except Exception as e:
-                    print(f"\n❌ Connectivity error: {e}")
-                    
-        except ImportError:
-            print("❌ Market collector module not available")
-        except Exception as e:
-            print(f"❌ Error: {e}")
+                print(f"  • {filename:<25} | ❌ Not found  |           | {description}")
         
         input("\nPress Enter to continue...")
     
     def run_debug(self):
-        """הפעלת כלי debug מתקדם"""
+        """כלי debug עם בדיקות היברידיות"""
         print("\n🔧 System Diagnostics & Debug Tools")
         print("="*50)
         
         debug_options = [
             ("1", "🔍 Test Kraken API Connection", self._debug_kraken),
-            ("2", "📊 Test Data Collection", self._debug_data_collection),
-            ("3", "🖥️  Test Dashboard Components", self._debug_dashboard),
-            ("4", "🧪 Test Simulation System", self._debug_simulations),
-            ("5", "📁 Check File System", self._debug_filesystem),
-            ("6", "🔧 Full System Diagnostics", self._debug_full_system)
+            ("2", "📊 Test Classic Data Collection", self._debug_data_collection),
+            ("3", "🚀 Test Hybrid Data Collection", self._debug_hybrid_collection),
+            ("4", "🖥️  Test Dashboard Components", self._debug_dashboard),
+            ("5", "🧪 Test Simulation System", self._debug_simulations),
+            ("6", "📁 Check File System", self._debug_filesystem),
+            ("7", "🌐 Test WebSocket Connection", self._debug_websocket),
+            ("8", "🔧 Full System Diagnostics", self._debug_full_system)
         ]
         
         print("\nDiagnostic Options:")
         for key, desc, _ in debug_options:
-            print(f"  {key}. {desc}")
+            available = "✅" if key != "3" or HYBRID_AVAILABLE else "❌"
+            if key == "7" and not HYBRID_AVAILABLE:
+                available = "❌"
+            print(f"  {key}. {available} {desc}")
         
-        choice = input("\nSelect diagnostic (1-6): ").strip()
+        choice = input("\nSelect diagnostic (1-8): ").strip()
         
         debug_map = {opt[0]: opt[2] for opt in debug_options}
         debug_func = debug_map.get(choice)
@@ -792,42 +880,157 @@ TAKE_PROFIT_PERCENT=10
         else:
             print("❌ Invalid choice")
     
+    def _debug_hybrid_collection(self):
+        """בדיקת איסוף היברידי"""
+        if not HYBRID_AVAILABLE:
+            print("❌ Hybrid collection not available")
+            print("Missing: websockets package")
+            print("Install: pip install websockets")
+            return
+        
+        print("🚀 Testing Hybrid Data Collection...")
+        
+        try:
+            from modules.hybrid_market_collector import HybridMarketCollector
+            
+            print("✅ Hybrid collector module imported")
+            
+            # בדיקה קצרה
+            test_symbols = ['BTC', 'ETH']
+            print(f"🧪 Creating test collector for {test_symbols}...")
+            
+            collector = HybridMarketCollector(
+                symbols=test_symbols,
+                api_key=Config.get_api_key('KRAKEN_API_KEY'),
+                api_secret=Config.get_api_key('KRAKEN_API_SECRET')
+            )
+            
+            print("✅ Hybrid collector created successfully")
+            
+            # Test callback
+            update_count = 0
+            def test_callback(price_update):
+                nonlocal update_count
+                update_count += 1
+                print(f"  📊 Update {update_count}: {price_update.symbol} = ${price_update.price:.2f}")
+            
+            collector.add_data_callback(test_callback)
+            
+            print("🚀 Starting collector for 10 seconds...")
+            collector.start()
+            
+            # המתנה קצרה
+            time.sleep(10)
+            
+            # בדיקת סטטיסטיקות
+            stats = collector.get_statistics()
+            print(f"\n📊 Test Results:")
+            print(f"  • Total Updates: {stats['total_updates']}")
+            print(f"  • WebSocket Status: {stats['websocket_status']}")
+            print(f"  • Active Symbols: {stats['active_symbols']}")
+            
+            # עצירה
+            collector.stop()
+            print("✅ Hybrid collection test completed")
+            
+        except Exception as e:
+            print(f"❌ Hybrid collection test failed: {e}")
+    
+    def _debug_websocket(self):
+        """בדיקת חיבור WebSocket"""
+        if not HYBRID_AVAILABLE:
+            print("❌ WebSocket support not available")
+            return
+        
+        print("🌐 Testing WebSocket Connection...")
+        
+        try:
+            import asyncio
+            import websockets
+            
+            async def test_ws():
+                try:
+                    print("🔗 Connecting to Kraken WebSocket...")
+                    async with websockets.connect("wss://ws.kraken.com") as websocket:
+                        print("✅ WebSocket connection successful")
+                        
+                        # Test subscription
+                        sub_msg = {
+                            "event": "subscribe",
+                            "pair": ["XBT/USD"],
+                            "subscription": {"name": "ticker"}
+                        }
+                        
+                        await websocket.send(json.dumps(sub_msg))
+                        print("📡 Subscription message sent")
+                        
+                        # Wait for responses
+                        for i in range(3):
+                            response = await asyncio.wait_for(websocket.recv(), timeout=5)
+                            data = json.loads(response)
+                            print(f"📨 Response {i+1}: {data.get('event', 'data')}")
+                        
+                        print("✅ WebSocket test completed successfully")
+                        
+                except asyncio.TimeoutError:
+                    print("⏰ WebSocket timeout - connection might be slow")
+                except Exception as e:
+                    print(f"❌ WebSocket test failed: {e}")
+            
+            # הרצת הבדיקה
+            asyncio.run(test_ws())
+            
+        except ImportError:
+            print("❌ WebSocket modules not available")
+        except Exception as e:
+            print(f"❌ WebSocket test error: {e}")
+    
+    def _debug_data_collection(self):
+        """בדיקת איסוף נתונים קלאסי"""
+        try:
+            from modules.market_collector import MarketCollector
+            
+            print("📊 Testing Classic Data Collection...")
+            collector = MarketCollector()
+            
+            # Test basic functionality
+            symbols = ['BTC', 'ETH']
+            prices = collector.get_combined_prices(symbols)
+            
+            if prices:
+                print("✅ Classic data collection working")
+                for symbol, data in prices.items():
+                    print(f"  • {symbol}: ${data['price']:,.2f}")
+            else:
+                print("❌ No data received")
+                
+        except ImportError:
+            print("❌ Classic market collector not available")
+        except Exception as e:
+            print(f"❌ Classic data collection test failed: {e}")
+    
     def _debug_kraken(self):
         """בדיקת Kraken API"""
         try:
-            from debug_kraken import test_connection
+            from modules.debug_kraken import test_connection
             test_connection()
         except ImportError:
             print("❌ Debug Kraken module not found")
-            # Basic API test - גרסה מתוקנת
             if Config.get_api_key('KRAKEN_API_KEY'):
                 print("✅ API Key configured")
-                print("💡 For full API test, ensure debug_kraken.py is available")
             else:
                 print("❌ No API key configured")
-    
-    def _debug_data_collection(self):
-        """בדיקת איסוף נתונים"""
-        try:
-            from market_collector import test_collector
-            test_collector()
-        except ImportError:
-            print("❌ Market collector module not available")
-        except Exception as e:
-            print(f"❌ Data collection test failed: {e}")
     
     def _debug_dashboard(self):
         """בדיקת רכיבי דאשבורד"""
         print("🖥️  Testing Dashboard Components...")
         
-        # בדיקת Streamlit
         try:
             import streamlit
             print("✅ Streamlit installed")
         except ImportError:
             print("❌ Streamlit not installed")
         
-        # בדיקת קבצי דאשבורד
         dashboard_files = [
             ('Simple Dashboard', os.path.join(DASHBOARDS_DIR, 'simple_dashboard.py')),
             ('Advanced Dashboard', os.path.join(DASHBOARDS_DIR, 'advanced_dashboard.py'))
@@ -835,37 +1038,18 @@ TAKE_PROFIT_PERCENT=10
         
         for name, path in dashboard_files:
             if os.path.exists(path):
-                print(f"✅ {name} found at {path}")
+                print(f"✅ {name} found")
             else:
                 print(f"❌ {name} not found at {path}")
     
     def _debug_simulations(self):
         """בדיקת מערכת סימולציות"""
         try:
-            from simulation_core import SimulationEngine
+            from modules.simulation_core import SimulationEngine
             
             print("🧪 Testing simulation engine...")
             engine = SimulationEngine(initial_balance=1000)
             print("✅ Simulation engine initialized")
-            
-            # Test basic simulation
-            import pandas as pd
-            import numpy as np
-            
-            # Create dummy data
-            dates = pd.date_range('2024-01-01', periods=100, freq='H')
-            prices = 50000 + np.cumsum(np.random.randn(100) * 100)
-            
-            test_df = pd.DataFrame({
-                'timestamp': dates,
-                'price': prices,
-                'volume': np.random.randint(1000, 10000, 100)
-            })
-            
-            result = engine.run_simulation(test_df, strategy='rsi')
-            print(f"✅ Test simulation completed")
-            print(f"   Final balance: ${result['final_balance']:.2f}")
-            print(f"   Profit: {result['total_profit_pct']*100:.2f}%")
             
         except ImportError:
             print("❌ Simulation modules not available")
@@ -876,8 +1060,7 @@ TAKE_PROFIT_PERCENT=10
         """בדיקת מערכת קבצים"""
         print("📁 File System Diagnostics...")
         
-        # בדיקת תיקיות
-        directories = ['data', 'logs', 'modules', 'dashboards', 'models']
+        directories = ['data', 'logs', 'modules', 'dashboards']
         for directory in directories:
             path = os.path.join(BASE_DIR, directory)
             if os.path.exists(path):
@@ -886,7 +1069,7 @@ TAKE_PROFIT_PERCENT=10
             else:
                 print(f"❌ {directory}/ - missing")
         
-        # בדיקת הרשאות
+        # Test write permissions
         test_file = os.path.join(Config.DATA_DIR, 'test_write.tmp')
         try:
             with open(test_file, 'w') as f:
@@ -897,18 +1080,21 @@ TAKE_PROFIT_PERCENT=10
             print(f"❌ File write permissions failed: {e}")
     
     def _debug_full_system(self):
-        """בדיקה מלאה של המערכת"""
+        """בדיקה מלאה של המערכת עם תמיכה היברידית"""
         print("🔧 Running Full System Diagnostics...")
         print("="*50)
         
-        # Run all debug tests
         tests = [
             ("API Connection", self._debug_kraken),
-            ("Data Collection", self._debug_data_collection),
-            ("Dashboard", self._debug_dashboard),
+            ("Classic Data Collection", self._debug_data_collection),
+            ("Dashboard Components", self._debug_dashboard),
             ("Simulations", self._debug_simulations),
             ("File System", self._debug_filesystem)
         ]
+        
+        if HYBRID_AVAILABLE:
+            tests.insert(2, ("Hybrid Data Collection", self._debug_hybrid_collection))
+            tests.insert(3, ("WebSocket Connection", self._debug_websocket))
         
         for test_name, test_func in tests:
             print(f"\n🔍 Testing {test_name}...")
@@ -918,11 +1104,14 @@ TAKE_PROFIT_PERCENT=10
             except Exception as e:
                 print(f"❌ {test_name} - FAILED: {e}")
         
-        print("\n" + "="*50)
-        print("✅ Full diagnostics complete!")
+        print(f"\n{'='*50}")
+        if HYBRID_AVAILABLE:
+            print("✅ Full diagnostics complete (Hybrid Mode)")
+        else:
+            print("✅ Full diagnostics complete (Classic Mode)")
     
     def show_docs(self):
-        """הצגת תיעוד מערכת"""
+        """תיעוד מערכת עם מידע היברידי"""
         print("\n📚 System Documentation & Help")
         print("="*50)
         
@@ -931,45 +1120,143 @@ TAKE_PROFIT_PERCENT=10
             ("2", "📊 Dashboard User Guide"),  
             ("3", "🤖 AI Trading Features"),
             ("4", "⚙️  API Configuration"),
-            ("5", "🧪 Running Simulations"),
-            ("6", "🔧 Troubleshooting Guide"),
-            ("7", "📈 Market Analysis Tools"),
-            ("8", "🔒 Security Best Practices")
+            ("5", "🌟 Hybrid Mode Guide (WebSocket + HTTP)"),
+            ("6", "🧪 Running Simulations"),
+            ("7", "🔧 Troubleshooting Guide"),
+            ("8", "📈 Market Analysis Tools"),
+            ("9", "🔒 Security Best Practices")
         ]
         
         for key, title in docs_menu:
-            print(f"  {key}. {title}")
+            available = "✅" if key != "5" or HYBRID_AVAILABLE else "❌"
+            print(f"  {key}. {available} {title}")
         
-        choice = input("\nSelect topic (1-8, or Enter to go back): ").strip()
+        choice = input("\nSelect topic (1-9, or Enter to go back): ").strip()
         
-        if choice == "1":
-            self._show_quick_start_guide()
-        elif choice == "2":
-            self._show_dashboard_guide()
-        elif choice == "3":
-            self._show_ai_features_guide()
-        elif choice == "4":
-            self._show_api_config_guide()
-        elif choice == "5":
-            self._show_simulations_guide()
-        elif choice == "6":
-            self._show_troubleshooting_guide()
+        if choice == "5":
+            self._show_hybrid_guide()
         elif choice == "7":
-            self._show_analysis_guide()
-        elif choice == "8":
-            self._show_security_guide()
+            self._show_troubleshooting_guide_hybrid()
+        else:
+            # Use existing documentation methods
+            if choice == "1":
+                self._show_quick_start_guide()
+            # Add other documentation methods as needed
         
-        if choice in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9"]:
             input("\nPress Enter to continue...")
     
+    def _show_hybrid_guide(self):
+        """מדריך מצב היברידי"""
+        if not HYBRID_AVAILABLE:
+            print("\n❌ Hybrid Mode Not Available")
+            print("Missing: websockets package")
+            print("Install: pip install websockets")
+            return
+        
+        print("\n🌟 Hybrid Mode Guide (WebSocket + HTTP)")
+        print("="*50)
+        print("""
+WHAT IS HYBRID MODE?
+• Combines WebSocket real-time feeds with HTTP API calls
+• WebSocket: Live price updates (sub-second latency)
+• HTTP: Account data, trading history, fallback
+• Best of both worlds: Speed + Reliability
+
+ADVANTAGES:
+• ⚡ Real-time price updates (no 30-second delays)
+• 📉 Lower bandwidth usage
+• 🔄 Automatic fallback to HTTP if WebSocket fails
+• 💰 Instant trading signal generation
+• 📊 Better market analysis with live data
+
+HOW TO USE:
+1. Choose "Hybrid Data Collection" from main menu
+2. System automatically connects to WebSocket feeds
+3. HTTP used for account data and fallback
+4. Dashboard shows real-time updates
+
+REQUIREMENTS:
+• Python websockets package: pip install websockets
+• Stable internet connection
+• Kraken API keys (optional but recommended)
+
+TROUBLESHOOTING:
+• If WebSocket fails, system falls back to HTTP
+• Check firewall settings for WebSocket connections
+• Monitor logs for connection status
+
+PERFORMANCE:
+• Expect 10-100x faster price updates
+• Reduced server load on Kraken
+• More accurate trading signals
+        """)
+    
+    def _show_troubleshooting_guide_hybrid(self):
+        """מדריך פתרון בעיות עם תמיכה היברידית"""
+        print("\n🔧 Troubleshooting Guide (Hybrid Mode)")
+        print("="*50)
+        print("""
+COMMON ISSUES:
+
+1. WebSocket Connection Failed:
+   → Check internet connection
+   → Verify firewall allows WebSocket connections
+   → Try restarting the hybrid collector
+   → Check logs for detailed error messages
+
+2. "Hybrid collector not available":
+   → Install websockets: pip install websockets
+   → Restart the application
+   → Check Python version (3.8+ recommended)
+
+3. WebSocket connects but no data:
+   → Check symbol subscriptions
+   → Verify Kraken WebSocket service status
+   → System will fallback to HTTP automatically
+
+4. High CPU usage with WebSocket:
+   → Reduce number of tracked symbols
+   → Check for memory leaks in logs
+   → Consider using HTTP-only mode temporarily
+
+5. Data inconsistencies:
+   → WebSocket and HTTP data may have slight differences
+   → This is normal due to timing
+   → Hybrid system prioritizes WebSocket data
+
+6. API rate limiting:
+   → WebSocket reduces API calls significantly
+   → HTTP fallback respects rate limits
+   → Account data still uses HTTP (unavoidable)
+
+HYBRID-SPECIFIC DEBUGGING:
+• Use Debug menu option "Test Hybrid Data Collection"
+• Check WebSocket connection with "Test WebSocket Connection"
+• Monitor logs for connection status changes
+• Watch for fallback messages in console
+
+GETTING HELP:
+• Enable debug logging for detailed information
+• Check system diagnostics (debug option)
+• WebSocket issues are often network-related
+• Consider running in HTTP-only mode as fallback
+        """)
+    
     def _show_quick_start_guide(self):
-        """מדריך התחלה מהירה"""
+        """מדריך התחלה מהירה עם היברידי"""
         print("\n🚀 Quick Start Guide")
         print("="*40)
-        print("""
+        
+        mode_info = "🌟 Hybrid Mode" if HYBRID_AVAILABLE else "📡 HTTP Mode"
+        
+        print(f"""
+CURRENT MODE: {mode_info}
+
 1. INSTALLATION:
    • Ensure Python 3.8+ is installed
    • Run: pip install -r requirements.txt
+   • For Hybrid Mode: pip install websockets
    • Copy .env.example to .env
 
 2. API CONFIGURATION:
@@ -979,301 +1266,72 @@ TAKE_PROFIT_PERCENT=10
      KRAKEN_API_SECRET=your_secret_here
 
 3. FIRST RUN:
-   • Test system: python test_system.py
-   • Start simple dashboard: python main.py → option 1
+   • Test system: python main.py → option 10 (Debug)
+   • Start dashboard: python main.py → option 1
    • Access at: http://localhost:8501
 
-4. NEXT STEPS:
-   • Try data collection (option 2)
-   • Run trading simulations (option 5)
-   • Explore market analysis (option 6)
+4. DATA COLLECTION:
+   • Hybrid Mode: python main.py → option 2 (Real-time)
+   • Classic Mode: python main.py → option 3 (30s intervals)
 
-5. LIVE TRADING (ADVANCED):
-   • Ensure API keys are configured
-   • Start with small amounts
-   • Use AI dashboard (option 3)
+5. ADVANCED FEATURES:
+   • AI Trading: option 4 (requires OpenAI API key)
+   • Full System: option 5 (Hybrid) or option 6 (Classic)
+   • Simulations: option 6
+
+6. MONITORING:
+   • Check logs/ directory for detailed information
+   • Use debug options for troubleshooting
+   • Monitor system resources with hybrid mode
         """)
     
-    def _show_dashboard_guide(self):
-        """מדריך דאשבורד"""
-        print("\n📊 Dashboard User Guide")
-        print("="*40)
-        print("""
-SIMPLE DASHBOARD:
-• Portfolio overview with real-time balances
-• Price charts and market data
-• Automatic refresh every 60 seconds
-• Mobile-friendly responsive design
-
-ADVANCED AI DASHBOARD:
-• All simple dashboard features PLUS:
-• AI trading signals and recommendations
-• Machine learning price predictions
-• Autonomous trading controls
-• Advanced market analysis tools
-• Portfolio optimization suggestions
-
-NAVIGATION:
-• Use sidebar for different sections
-• Click refresh button for latest data
-• Hover over charts for detailed info
-• Use filters to customize views
-
-TROUBLESHOOTING:
-• If dashboard won't load: check Streamlit installation
-• If no data shown: run data collection first
-• If API errors: verify .env configuration
-        """)
-    
-    def _show_ai_features_guide(self):
-        """מדריך תכונות AI"""
-        print("\n🤖 AI Trading Features Guide")
-        print("="*40)
-        print("""
-AI TRADING MODES:
-• Conservative: Low risk, steady gains
-• Balanced: Medium risk/reward ratio  
-• Aggressive: High risk, high potential returns
-• Custom: User-defined parameters
-
-TRADING STRATEGIES:
-• Trend Following: Rides market momentum
-• Mean Reversion: Profits from price corrections
-• Pattern Recognition: Identifies chart patterns
-• Sentiment Analysis: Uses news sentiment
-• Arbitrage Detection: Finds price differences
-
-MACHINE LEARNING:
-• Price prediction models
-• Risk assessment algorithms
-• Portfolio optimization
-• Automated strategy selection
-
-SAFETY FEATURES:
-• Demo mode for testing
-• Position size limits
-• Daily loss limits
-• Emergency stop functionality
-
-REQUIREMENTS:
-• OpenAI API key (optional but recommended)
-• Sufficient account balance
-• Proper risk management settings
-        """)
-    
-    def _show_api_config_guide(self):
-        """מדריך הגדרת API"""
-        print("\n⚙️  API Configuration Guide")
-        print("="*40)
-        print("""
-KRAKEN API SETUP:
-1. Login to kraken.com
-2. Go to Settings → API
-3. Create new API key with permissions:
-   • Query Funds
-   • Query Open Orders and Trades
-   • Create & Modify Orders (for live trading)
-4. Add to .env file:
-   KRAKEN_API_KEY=your_key_here
-   KRAKEN_API_SECRET=your_secret_here
-
-OPTIONAL APIS:
-• OpenAI (for AI features):
-  OPENAI_API_KEY=sk-...
-• CryptoPanic (for news):
-  CRYPTOPANIC_API_KEY=your_key_here
-
-SECURITY TIPS:
-• Never share your API keys
-• Use IP restrictions if possible
-• Start with query-only permissions
-• Monitor API usage regularly
-• Keep .env file secure and private
-
-TESTING:
-• Use debug option (9) to test connection
-• Start with demo mode
-• Verify balances show correctly
-        """)
-    
-    def _show_simulations_guide(self):
-        """מדריך סימולציות"""
-        print("\n🧪 Trading Simulations Guide")
-        print("="*40)
-        print("""
-SIMULATION TYPES:
-• Single Strategy Test: Test one strategy
-• Multi-Strategy Comparison: Compare strategies
-• Parameter Optimization: Find best settings
-• Portfolio Backtest: Test full portfolio
-
-AVAILABLE STRATEGIES:
-• Combined: Uses multiple indicators
-• RSI: Relative Strength Index
-• EMA: Exponential Moving Average
-• MACD: Moving Average Convergence Divergence
-• Bollinger Bands: Volatility bands
-• SMA: Simple Moving Average
-
-PARAMETERS TO OPTIMIZE:
-• Initial Balance: Starting capital
-• Take Profit: Profit target percentage
-• Stop Loss: Maximum loss percentage
-• Max Positions: Number of concurrent trades
-
-INTERPRETING RESULTS:
-• Total Return: Overall profit/loss
-• Win Rate: Percentage of profitable trades
-• Sharpe Ratio: Risk-adjusted returns
-• Max Drawdown: Largest losing streak
-
-BEST PRACTICES:
-• Test multiple time periods
-• Use realistic transaction costs
-• Consider market conditions
-• Don't over-optimize parameters
-        """)
-    
-    def _show_troubleshooting_guide(self):
-        """מדריך פתרון בעיות"""
-        print("\n🔧 Troubleshooting Guide")
-        print("="*40)
-        print("""
-COMMON ISSUES:
-
-1. "Module not found" errors:
-   → Run: pip install -r requirements.txt
-   → Check file locations in modules/ directory
-
-2. API connection failed:
-   → Verify API keys in .env file
-   → Check internet connection
-   → Test with debug option (9)
-
-3. Dashboard won't start:
-   → Install Streamlit: pip install streamlit
-   → Check port 8501 is available
-   → Try different port: streamlit run --server.port 8502
-
-4. No market data:
-   → Run data collection first (option 2)
-   → Check API key permissions
-   → Verify data/ directory exists
-
-5. Simulations fail:
-   → Ensure historical data is available
-   → Check simulation modules in modules/
-   → Try with smaller datasets
-
-6. AI features not working:
-   → Add OpenAI API key to .env
-   → Check AI model availability
-   → Reduce complexity of requests
-
-GETTING HELP:
-• Use system diagnostics (debug option)
-• Check log files in logs/ directory
-• Verify system requirements
-• Test individual components separately
-        """)
-    
-    def _show_analysis_guide(self):
-        """מדריך כלי ניתוח"""
-        print("\n📈 Market Analysis Tools Guide")
-        print("="*40)
-        print("""
-AVAILABLE ANALYSIS:
-• Real-time price monitoring
-• Technical indicators (RSI, MACD, etc.)
-• Volume analysis
-• Market sentiment from news
-• Portfolio performance tracking
-
-TECHNICAL INDICATORS:
-• RSI: Momentum oscillator (0-100)
-• MACD: Trend-following momentum
-• Bollinger Bands: Volatility indicator
-• Moving Averages: Trend direction
-• Volume: Market participation
-
-MARKET SENTIMENT:
-• News sentiment analysis
-• Social media sentiment
-• Fear & Greed Index
-• Whale movement tracking
-
-PORTFOLIO ANALYSIS:
-• Asset allocation breakdown
-• Performance attribution
-• Risk metrics calculation
-• Correlation analysis
-
-USING THE DATA:
-• Combine multiple indicators
-• Look for confluences
-• Consider market context
-• Use proper risk management
-• Keep historical perspective
-        """)
-    
-    def _show_security_guide(self):
-        """מדריך אבטחה"""
-        print("\n🔒 Security Best Practices")
-        print("="*40)
-        print("""
-API SECURITY:
-• Never commit .env files to git
-• Use IP restrictions on API keys
-• Rotate keys regularly
-• Monitor API usage
-• Start with read-only permissions
-• Use separate keys for testing
-
-TRADING SECURITY:
-• Start with small amounts
-• Use stop-loss orders
-• Don't risk more than you can afford
-• Test strategies thoroughly
-• Keep emergency stops enabled
-• Monitor positions regularly
-
-SYSTEM SECURITY:
-• Keep software updated
-• Use strong passwords
-• Enable 2FA on exchange accounts
-• Regular backups of important data
-• Secure your development environment
-
-OPERATIONAL SECURITY:
-• Review all trades before execution
-• Understand all strategies being used
-• Monitor system logs regularly
-• Have contingency plans
-• Keep manual override capabilities
-        """)
+    def _cleanup_processes(self):
+        """ניקוי תהליכים כולל היברידי"""
+        # Stop hybrid collector
+        if self.hybrid_collector:
+            try:
+                self.hybrid_collector.stop()
+                logger.info("Hybrid collector stopped")
+            except Exception as e:
+                logger.error(f"Error stopping hybrid collector: {e}")
+        
+        # Stop other processes
+        for name, process in self.processes.items():
+            if process and process.poll() is None:
+                logger.info(f"Terminating {name}")
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
     
     def run(self):
-        """הפעלה ראשית עם error handling משופר"""
+        """הפעלה ראשית עם תמיכה היברידית"""
         while True:
             try:
                 choice = self.show_menu()
                 
                 if choice == "exit":
                     print("\n👋 Thank you for using Kraken Trading Bot!")
+                    if HYBRID_AVAILABLE:
+                        print("🌟 Hybrid Mode: WebSocket + HTTP")
                     print("💎 Safe trading!")
                     break
                     
                 elif choice == "simple_dashboard":
                     self.run_simple_dashboard()
                     
+                elif choice == "hybrid_collect_data":
+                    self.run_hybrid_data_collection()
+                    
                 elif choice == "collect_data":
                     self.run_data_collection()
                     
                 elif choice == "ai_dashboard":
-                    self.run_ai_dashboard()
+                    self.run_ai_dashboard()  # You'll need to implement this
                     
-                elif choice == "full_system":
-                    self.run_full_system()
+                elif choice == "hybrid_full_system":
+                    self.run_hybrid_full_system()
                     
                 elif choice == "simulations":
                     self.run_simulations()
@@ -1285,7 +1343,7 @@ OPERATIONAL SECURITY:
                     self.show_settings()
                     
                 elif choice == "symbols":
-                    self._update_trading_symbols()
+                    self._update_trading_symbols()  # You'll need to implement this
                     
                 elif choice == "debug":
                     self.run_debug()
@@ -1314,15 +1372,16 @@ OPERATIONAL SECURITY:
             logger.error(f"Cleanup error: {e}")
 
 def main():
-    """נקודת כניסה ראשית משופרת"""
+    """נקודת כניסה ראשית מעודכנת"""
     parser = argparse.ArgumentParser(
-        description='Kraken Trading Bot v2.0 - Advanced Crypto Trading System',
+        description='Kraken Trading Bot v2.1 - Hybrid WebSocket + HTTP Trading System',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python main.py                    # Interactive menu
   python main.py --mode dashboard   # Direct to dashboard
-  python main.py --mode collect     # Start data collection
+  python main.py --mode hybrid      # Start hybrid data collection
+  python main.py --mode collect     # Start classic data collection
   python main.py --mode simulate    # Run simulations
   python main.py --mode debug       # System diagnostics
         """
@@ -1330,8 +1389,14 @@ Examples:
     
     parser.add_argument(
         '--mode',
-        choices=['dashboard', 'collect', 'simulate', 'debug', 'full'],
+        choices=['dashboard', 'hybrid', 'collect', 'simulate', 'debug', 'full'],
         help='Direct mode execution'
+    )
+    
+    parser.add_argument(
+        '--symbols',
+        nargs='+',
+        help='Symbols to track (e.g., BTC ETH SOL)'
     )
     
     parser.add_argument(
@@ -1343,46 +1408,16 @@ Examples:
     parser.add_argument(
         '--version',
         action='version',
-        version='Kraken Trading Bot v2.0.1'
-    )
-    
-    parser.add_argument(
-        '--setup',
-        action='store_true',
-        help='Run initial system setup'
+        version='Kraken Trading Bot v2.1.0-hybrid'
     )
     
     args = parser.parse_args()
     
-    # System setup mode
-    if args.setup:
-        print("🏗️  Running initial system setup...")
-        try:
-            from setup_complete_system import main as setup_main
-            setup_main()
-        except ImportError:
-            print("❌ Setup script not found. Please ensure setup_complete_system.py exists.")
-        return
-    
-    # Git auto-update (optional)
-    if not args.no_git and os.path.exists('.git'):
-        try:
-            from git_manager import GitManager
-            git = GitManager()
-            success, message = git.auto_update()
-            if success:
-                logger.info(f"Git update: {message}")
-        except ImportError:
-            logger.warning("Git manager not available")
-        except Exception as e:
-            logger.warning(f"Git update failed: {e}")
-    
     # Initialize bot manager
     try:
-        bot_manager = TradingBotManager()
+        bot_manager = EnhancedTradingBotManager()
     except Exception as e:
         print(f"❌ Failed to initialize system: {e}")
-        print("💡 Try running with --setup flag first")
         return
     
     try:
@@ -1392,6 +1427,12 @@ Examples:
             
             if args.mode == 'dashboard':
                 bot_manager.run_simple_dashboard()
+            elif args.mode == 'hybrid':
+                if HYBRID_AVAILABLE:
+                    bot_manager.run_hybrid_data_collection()
+                else:
+                    print("❌ Hybrid mode not available, falling back to classic")
+                    bot_manager.run_data_collection()
             elif args.mode == 'collect':
                 bot_manager.run_data_collection()
             elif args.mode == 'simulate':
@@ -1399,7 +1440,10 @@ Examples:
             elif args.mode == 'debug':
                 bot_manager.run_debug()
             elif args.mode == 'full':
-                bot_manager.run_full_system()
+                if HYBRID_AVAILABLE:
+                    bot_manager.run_hybrid_full_system()
+                else:
+                    bot_manager.run_full_system()
         else:
             # Interactive menu mode
             bot_manager.run()
@@ -1421,6 +1465,8 @@ Examples:
             pass
         
         print("\n✅ System shutdown complete")
+        if HYBRID_AVAILABLE:
+            print("🌟 Hybrid WebSocket + HTTP support was available")
         print("💎 Thank you for using Kraken Trading Bot!")
 
 if __name__ == '__main__':
