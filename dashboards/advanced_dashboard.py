@@ -1182,12 +1182,14 @@ def main():
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
         
+        from streamlit_autorefresh import st_autorefresh
+
         auto_refresh = st.checkbox("Auto Refresh (30s)", value=False)
         dark_mode = st.checkbox("Dark Mode", value=True)
-        
+
         if auto_refresh:
-            time.sleep(30)
-            st.rerun()
+            st_autorefresh(interval=10_000, key="auto_refresh")
+
     
     # Main content based on selection
     if page == "📊 Dashboard":
