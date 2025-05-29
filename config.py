@@ -190,6 +190,22 @@ class AdvancedConfig:
             'backup_enabled': os.getenv('DATA_BACKUP_ENABLED', 'true').lower() == 'true',
             'backup_interval_hours': int(os.getenv('BACKUP_INTERVAL_HOURS', '24'))
         }
+        
+        # Simple attributes for backward compatibility
+        self.DEFAULT_COINS = self.SYMBOL_CONFIG['default_symbols']
+        self.DEFAULT_TRADING_PARAMS = {
+            'min_trade_amount': self.TRADING_PARAMS['position_management']['min_trade_amount'],
+            'max_trade_percent': self.TRADING_PARAMS['risk_management']['max_position_size_pct'],
+            'stop_loss_percent': self.TRADING_PARAMS['risk_management']['stop_loss_pct'] * 100,
+            'take_profit_percent': self.TRADING_PARAMS['risk_management']['take_profit_pct'] * 100
+        }
+        
+        # Trading settings for compatibility
+        self.TRADING_SETTINGS = {
+            'use_all_symbols': os.getenv('USE_ALL_SYMBOLS', 'false').lower() == 'true',
+            'max_symbols': self.SYMBOL_CONFIG['max_symbols'],
+            'priority_symbols': self.SYMBOL_CONFIG['priority_symbols']
+        }
     
     def _load_symbol_list(self, env_var: str, default: List[str]) -> List[str]:
         """טעינת רשימת סמלים מ-environment"""
@@ -255,6 +271,14 @@ class AdvancedConfig:
         """קבלת סטטוס כל המפתחות"""
         return self._api_key_status.copy()
     
+    def validate_keys(self) -> bool:
+        """בדיקת תקינות מפתחות API - הוספנו את המתודה החסרה"""
+        # Check if at least one API key is configured and valid
+        for key_name, status in self._api_key_status.items():
+            if status.get('configured') and status.get('valid'):
+                return True
+        return False
+    
     # File Paths
     @property
     def MARKET_LIVE_FILE(self) -> Path:
@@ -298,17 +322,20 @@ class AdvancedConfig:
         
         # File handler with rotation
         if self.LOGGING_CONFIG['file_logging']:
-            from logging.handlers import RotatingFileHandler
-            
-            log_file = self.LOGS_DIR / f'{module_name}.log'
-            file_handler = RotatingFileHandler(
-                log_file,
-                maxBytes=self.LOGGING_CONFIG['max_file_size_mb'] * 1024 * 1024,
-                backupCount=self.LOGGING_CONFIG['backup_count'],
-                encoding='utf-8'
-            )
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
+            try:
+                from logging.handlers import RotatingFileHandler
+                
+                log_file = self.LOGS_DIR / f'{module_name}.log'
+                file_handler = RotatingFileHandler(
+                    log_file,
+                    maxBytes=self.LOGGING_CONFIG['max_file_size_mb'] * 1024 * 1024,
+                    backupCount=self.LOGGING_CONFIG['backup_count'],
+                    encoding='utf-8'
+                )
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+            except Exception as e:
+                print(f"Warning: Could not setup file logging: {e}")
         
         # Console handler
         if self.LOGGING_CONFIG['console_logging']:
