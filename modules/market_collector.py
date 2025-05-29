@@ -7,6 +7,12 @@ import krakenex
 from typing import Dict, List, Optional, Tuple
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+import aiohttp
+import json
+from dataclasses import dataclass
+import sqlite3
+from functools import lru_cache
 
 # הוספת נתיב למודולים
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,518 +20,660 @@ from config import Config
 
 logger = Config.setup_logging('market_collector')
 
-class MarketCollector:
-    """איסוף נתוני שוק משופר עם תמיכה ב-Kraken ו-fallback"""
+@dataclass
+class MarketDataPoint:
+    """נקודת נתונים בודדת"""
+    timestamp: datetime
+    symbol: str
+    price: float
+    volume: float
+    high_24h: float
+    low_24h: float
+    change_24h: float
+    change_pct_24h: float
+    bid: float
+    ask: float
+    spread: float
+    source: str
+    quality_score: float = 1.0
+
+class DataQualityManager:
+    """מנהל איכות נתונים"""
+    
+    def __init__(self):
+        self.quality_thresholds = {
+            'price_change_limit': 0.5,  # 50% max change per update
+            'spread_limit': 0.05,       # 5% max spread
+            'volume_anomaly_factor': 10, # 10x volume spike threshold
+            'data_age_limit': 300       # 5 minutes max age
+        }
+        
+        self.symbol_baselines = {}
+    
+    def validate_data_point(self, data_point: MarketDataPoint, 
+                           previous_data: Optional[MarketDataPoint] = None) -> Tuple[bool, float, List[str]]:
+        """בדיקת איכות נקודת נתונים"""
+        issues = []
+        quality_score = 1.0
+        
+        # Basic validations
+        if data_point.price <= 0:
+            issues.append("Invalid price: <= 0")
+            quality_score = 0
+            return False, quality_score, issues
+        
+        if data_point.volume < 0:
+            issues.append("Invalid volume: < 0")
+            quality_score *= 0.8
+        
+        # Spread validation
+        if data_point.spread > 0 and data_point.price > 0:
+            spread_pct = data_point.spread / data_point.price
+            if spread_pct > self.quality_thresholds['spread_limit']:
+                issues.append(f"High spread: {spread_pct*100:.2f}%")
+                quality_score *= 0.7
+        
+        # Price change validation (if we have previous data)
+        if previous_data:
+            price_change = abs(data_point.price - previous_data.price) / previous_data.price
+            if price_change > self.quality_thresholds['price_change_limit']:
+                issues.append(f"Extreme price change: {price_change*100:.2f}%")
+                quality_score *= 0.5
+            
+            # Volume anomaly check
+            if (data_point.volume > 0 and previous_data.volume > 0 and 
+                data_point.volume > previous_data.volume * self.quality_thresholds['volume_anomaly_factor']):
+                issues.append(f"Volume spike detected: {data_point.volume/previous_data.volume:.1f}x")
+                quality_score *= 0.9
+        
+        # Data freshness
+        data_age = (datetime.now() - data_point.timestamp).total_seconds()
+        if data_age > self.quality_thresholds['data_age_limit']:
+            issues.append(f"Stale data: {data_age:.0f}s old")
+            quality_score *= 0.6
+        
+        data_point.quality_score = quality_score
+        is_valid = quality_score > 0.3  # Minimum 30% quality score
+        
+        return is_valid, quality_score, issues
+
+class EnhancedMarketCollector:
+    """איסוף נתוני שוק משופר עם בקרת איכות"""
     
     def __init__(self, use_kraken: bool = True, use_binance: bool = True):
         self.use_kraken = use_kraken and Config.KRAKEN_API_KEY
         self.use_binance = use_binance
         
-        # אתחול APIs
+        # Initialize APIs
         self.kraken_api = None
         if self.use_kraken:
             self.kraken_api = krakenex.API(Config.KRAKEN_API_KEY, Config.KRAKEN_API_SECRET)
+        
+        # Data quality manager
+        self.quality_manager = DataQualityManager()
+        
+        # Enhanced caching
+        self.price_cache = {}
+        self.cache_timestamps = {}
+        self.cache_duration = 10  # seconds
+        
+        # Database connection for historical data
+        self.db_path = os.path.join(Config.DATA_DIR, 'market_data.db')
+        self._init_database()
+        
+        # Performance metrics
+        self.collection_stats = {
+            'total_requests': 0,
+            'successful_requests': 0,
+            'failed_requests': 0,
+            'data_quality_score': 0,
+            'last_update': None
+        }
+        
+        # Rate limiting
+        self.last_api_call = {}
+        self.min_interval_seconds = {
+            'kraken': 1,    # 1 second between calls
+            'binance': 0.5  # 0.5 seconds between calls
+        }
+    
+    def _init_database(self):
+        """אתחול בסיס נתונים לאחסון היסטורי"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             
-        self.binance_client = None
-        if self.use_binance:
-            try:
-                from binance.client import Client
-                self.binance_client = Client()
-            except ImportError:
-                logger.warning("Binance client not installed, using Kraken only")
-                self.use_binance = False
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS market_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME,
+                    symbol TEXT,
+                    price REAL,
+                    volume REAL,
+                    high_24h REAL,
+                    low_24h REAL,
+                    change_24h REAL,
+                    change_pct_24h REAL,
+                    bid REAL,
+                    ask REAL,
+                    spread REAL,
+                    source TEXT,
+                    quality_score REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(timestamp, symbol, source)
+                )
+            ''')
+            
+            # Create indexes for better performance
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_symbol_timestamp ON market_data(symbol, timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON market_data(timestamp)')
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info("Database initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+    
+    def _respect_rate_limit(self, source: str):
+        """כיבוד מגבלות קצב קריאות API"""
+        if source in self.last_api_call:
+            time_since_last = time.time() - self.last_api_call[source]
+            min_interval = self.min_interval_seconds.get(source, 1)
+            
+            if time_since_last < min_interval:
+                sleep_time = min_interval - time_since_last
+                time.sleep(sleep_time)
         
-        # קבצי נתונים
-        self.live_file = Config.MARKET_LIVE_FILE
-        self.history_file = Config.MARKET_HISTORY_FILE
-        
-        # cache לאופטימיזציה
-        self.last_prices = {}
-        self.error_count = {}
-        
-    def get_kraken_prices(self, symbols: Optional[List[str]] = None) -> Dict[str, Dict]:
-        """שליפת מחירים מ-Kraken"""
+        self.last_api_call[source] = time.time()
+    
+    @lru_cache(maxsize=100)
+    def _get_symbol_mapping(self, symbol: str) -> str:
+        """מיפוי סמלים עם cache"""
+        return self._normalize_kraken_symbol(symbol)
+    
+    def get_kraken_prices_enhanced(self, symbols: Optional[List[str]] = None) -> Dict[str, MarketDataPoint]:
+        """שליפת מחירים משופרת מ-Kraken"""
         if not self.kraken_api:
             return {}
-            
+        
+        self._respect_rate_limit('kraken')
+        
         try:
-            # שליפת כל המחירים בקריאה אחת
+            self.collection_stats['total_requests'] += 1
+            
+            # Use cached data if available and fresh
+            cache_key = f"kraken_{'_'.join(symbols) if symbols else 'all'}"
+            if (cache_key in self.price_cache and 
+                cache_key in self.cache_timestamps and
+                (time.time() - self.cache_timestamps[cache_key]) < self.cache_duration):
+                return self.price_cache[cache_key]
+            
+            # Fetch from API
             ticker_resp = self.kraken_api.query_public('Ticker')
             
             if ticker_resp.get('error'):
                 logger.error(f"Kraken API error: {ticker_resp['error']}")
+                self.collection_stats['failed_requests'] += 1
                 return {}
-                
+            
             results = {}
             ticker_data = ticker_resp.get('result', {})
+            timestamp = datetime.utcnow()
+            
+            quality_scores = []
             
             for pair, data in ticker_data.items():
-                # המרת שם הזוג לפורמט סטנדרטי
-                if 'USD' in pair:
-                    symbol = self._normalize_kraken_symbol(pair)
-                    
-                    if symbols and symbol not in symbols:
-                        continue
-                        
-                    try:
-                        # בדיקה שכל הערכים קיימים
-                        current_price = float(data.get('c', [0])[0])
-                        open_price = float(data.get('o', current_price))
-                        
-                        # הגנה מפני חלוקה באפס
-                        if open_price != 0:
-                            change_pct = ((current_price - open_price) / open_price) * 100
-                        else:
-                            change_pct = 0
-                            
-                        results[symbol] = {
-                            'price': current_price,
-                            'volume': float(data.get('v', [0, 0])[1]),
-                            'high_24h': float(data.get('h', [0, current_price])[1]),
-                            'low_24h': float(data.get('l', [0, current_price])[1]),
-                            'change_24h': current_price - open_price,
-                            'change_pct_24h': change_pct,
-                            'bid': float(data.get('b', [current_price])[0]),
-                            'ask': float(data.get('a', [current_price])[0]),
-                            'spread': float(data.get('a', [0])[0]) - float(data.get('b', [0])[0]),
-                            'trades_24h': int(data.get('t', [0, 0])[1]),
-                            'source': 'kraken'
-                        }
-                    except (KeyError, ValueError, IndexError) as e:
-                        logger.warning(f"Error parsing Kraken data for {pair}: {e}")
-                        
-            return results
-            
-        except Exception as e:
-            logger.error(f"Kraken prices fetch error: {e}")
-            return {}
-    
-    def get_binance_prices(self, symbols: Optional[List[str]] = None) -> Dict[str, Dict]:
-        """שליפת מחירים מ-Binance כ-fallback"""
-        if not self.binance_client:
-            return {}
-            
-        try:
-            # שליפת ticker 24h
-            ticker_24h = self.binance_client.get_ticker()
-            
-            results = {}
-            for ticker in ticker_24h:
-                symbol_pair = ticker['symbol']
+                if 'USD' not in pair:
+                    continue
                 
-                if symbol_pair.endswith('USDT'):
-                    symbol = symbol_pair.replace('USDT', '')
-                    
-                    if symbols and symbol not in symbols:
+                symbol = self._get_symbol_mapping(pair)
+                
+                if symbols and symbol not in symbols:
+                    continue
+                
+                try:
+                    # Parse data more carefully
+                    current_price = self._safe_float(data.get('c', [0])[0])
+                    if current_price <= 0:
                         continue
+                    
+                    open_price = self._safe_float(data.get('o', current_price))
+                    
+                    # Calculate change with error handling
+                    if open_price > 0:
+                        change_pct = ((current_price - open_price) / open_price) * 100
+                        change_24h = current_price - open_price
+                    else:
+                        change_pct = 0
+                        change_24h = 0
+                    
+                    # Create data point
+                    data_point = MarketDataPoint(
+                        timestamp=timestamp,
+                        symbol=symbol,
+                        price=current_price,
+                        volume=self._safe_float(data.get('v', [0, 0])[1]),
+                        high_24h=self._safe_float(data.get('h', [0, current_price])[1]),
+                        low_24h=self._safe_float(data.get('l', [0, current_price])[1]),
+                        change_24h=change_24h,
+                        change_pct_24h=change_pct,
+                        bid=self._safe_float(data.get('b', [current_price])[0]),
+                        ask=self._safe_float(data.get('a', [current_price])[0]),
+                        spread=self._safe_float(data.get('a', [0])[0]) - self._safe_float(data.get('b', [0])[0]),
+                        source='kraken'
+                    )
+                    
+                    # Validate data quality
+                    previous_data = self._get_last_data_point(symbol, 'kraken')
+                    is_valid, quality_score, issues = self.quality_manager.validate_data_point(
+                        data_point, previous_data
+                    )
+                    
+                    if is_valid:
+                        results[symbol] = data_point
+                        quality_scores.append(quality_score)
+                    else:
+                        logger.warning(f"Invalid data for {symbol}: {issues}")
                         
-                    try:
-                        results[symbol] = {
-                            'price': float(ticker['lastPrice']),
-                            'volume': float(ticker['volume']),
-                            'high_24h': float(ticker['highPrice']),
-                            'low_24h': float(ticker['lowPrice']),
-                            'change_24h': float(ticker['priceChange']),
-                            'change_pct_24h': float(ticker['priceChangePercent']),
-                            'bid': float(ticker['bidPrice']),
-                            'ask': float(ticker['askPrice']),
-                            'spread': float(ticker['askPrice']) - float(ticker['bidPrice']),
-                            'trades_24h': int(ticker['count']),
-                            'source': 'binance'
-                        }
-                    except (KeyError, ValueError) as e:
-                        logger.warning(f"Error parsing Binance data for {symbol_pair}: {e}")
-                        
+                except (KeyError, ValueError, IndexError, TypeError) as e:
+                    logger.warning(f"Error parsing Kraken data for {pair}: {e}")
+                    continue
+            
+            # Update statistics
+            if quality_scores:
+                avg_quality = sum(quality_scores) / len(quality_scores)
+                self.collection_stats['data_quality_score'] = avg_quality
+                self.collection_stats['successful_requests'] += 1
+            
+            # Cache results
+            self.price_cache[cache_key] = results
+            self.cache_timestamps[cache_key] = time.time()
+            
             return results
             
         except Exception as e:
-            logger.error(f"Binance prices fetch error: {e}")
+            logger.error(f"Kraken enhanced collection error: {e}")
+            self.collection_stats['failed_requests'] += 1
             return {}
     
-    def get_combined_prices(self, symbols: Optional[List[str]] = None) -> Dict[str, Dict]:
-        """שליפת מחירים משולבת עם עדיפות ל-Kraken"""
-        all_prices = {}
+    def _safe_float(self, value, default: float = 0.0) -> float:
+        """המרה בטוחה לfloat"""
+        try:
+            if isinstance(value, (list, tuple)) and len(value) > 0:
+                return float(value[0])
+            return float(value) if value is not None else default
+        except (ValueError, TypeError):
+            return default
+    
+    def _get_last_data_point(self, symbol: str, source: str) -> Optional[MarketDataPoint]:
+        """קבלת נקודת נתונים אחרונה מהDB"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT * FROM market_data 
+                WHERE symbol = ? AND source = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            ''', (symbol, source))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return MarketDataPoint(
+                    timestamp=datetime.fromisoformat(row[1]),
+                    symbol=row[2],
+                    price=row[3],
+                    volume=row[4],
+                    high_24h=row[5],
+                    low_24h=row[6],
+                    change_24h=row[7],
+                    change_pct_24h=row[8],
+                    bid=row[9],
+                    ask=row[10],
+                    spread=row[11],
+                    source=row[12],
+                    quality_score=row[13]
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting last data point: {e}")
+            return None
+    
+    def collect_and_store_enhanced(self, symbols: Optional[List[str]] = None) -> pd.DataFrame:
+        """איסוף ושמירה משופרים"""
+        logger.info("Starting enhanced data collection")
         
-        # נסה קודם Kraken
+        # Collect from all sources
+        all_data_points = []
+        
+        # Kraken data
         if self.use_kraken:
-            kraken_prices = self.get_kraken_prices(symbols)
-            all_prices.update(kraken_prices)
-            logger.info(f"Got {len(kraken_prices)} prices from Kraken")
+            kraken_data = self.get_kraken_prices_enhanced(symbols)
+            all_data_points.extend(kraken_data.values())
         
-        # השלם עם Binance למטבעות חסרים
+        # Binance data (if available)
         if self.use_binance:
-            missing_symbols = None
-            if symbols:
-                missing_symbols = [s for s in symbols if s not in all_prices]
-                
-            if not symbols or missing_symbols:
-                binance_prices = self.get_binance_prices(missing_symbols)
-                
-                # הוסף רק מטבעות שלא קיימים
-                for symbol, data in binance_prices.items():
-                    if symbol not in all_prices:
-                        all_prices[symbol] = data
-                        
-                logger.info(f"Added {len(binance_prices)} prices from Binance")
+            try:
+                binance_data = self._get_binance_data_enhanced(symbols)
+                all_data_points.extend(binance_data.values())
+            except Exception as e:
+                logger.warning(f"Binance collection failed: {e}")
         
-        return all_prices
-    
-    def get_all_available_symbols(self) -> List[str]:
-        """קבלת כל המטבעות הזמינים ב-Kraken"""
-        if not self.kraken_api:
-            return Config.DEFAULT_COINS
-    
-        try:
-            # שליפת כל הזוגות
-            resp = self.kraken_api.query_public('AssetPairs')
-            if resp.get('error'):
-                logger.error(f"Error getting pairs: {resp['error']}")
-                return Config.DEFAULT_COINS
-        
-            symbols = set()
-            for pair, info in resp.get('result', {}).items():
-                # רק זוגות עם USD שפעילים
-                if 'USD' in pair and info.get('status') == 'online':
-                    # נקה את הסמל
-                    symbol = self._normalize_kraken_symbol(pair)
-                    if symbol not in ['USD', 'EUR', 'GBP']:  # לא מטבעות פיאט
-                        symbols.add(symbol)
-        
-            # החזר רשימה ממוינת
-            return sorted(list(symbols))
-    
-        except Exception as e:
-            logger.error(f"Error getting symbols: {e}")
-            return Config.DEFAULT_COINS
-            
-    def collect_market_data(self, symbols: Optional[List[str]] = None) -> pd.DataFrame:
-        """איסוף נתוני שוק מלאים"""
-        if symbols is None:
-            symbols = Config.DEFAULT_COINS
-            
-        # שליפת מחירים
-        prices_data = self.get_combined_prices(symbols)
-        
-        if not prices_data:
-            logger.error("No price data collected")
+        if not all_data_points:
+            logger.warning("No data collected")
             return pd.DataFrame()
         
-        # המרה ל-DataFrame
-        timestamp = datetime.utcnow()
-        data_rows = []
+        # Convert to DataFrame
+        df_data = []
+        valid_points = 0
         
-        for symbol, data in prices_data.items():
-            row = {
-                'timestamp': timestamp,
-                'pair': f"{symbol}USD",
-                'symbol': symbol,
-                'price': data['price'],
-                'volume': data['volume'],
-                'high_24h': data['high_24h'],
-                'low_24h': data['low_24h'],
-                'change_24h': data.get('change_24h', 0),
-                'change_pct_24h': data.get('change_pct_24h', 0),
-                'bid': data.get('bid', data['price']),
-                'ask': data.get('ask', data['price']),
-                'spread': data.get('spread', 0),
-                'trades_24h': data.get('trades_24h', 0),
-                'source': data['source']
-            }
-            
-            # בדיקת שינוי ממשי מהמחיר האחרון
-            last_price = self.last_prices.get(symbol, 0)
-            if last_price > 0:
-                row['price_change'] = data['price'] - last_price
-                row['price_change_pct'] = ((data['price'] - last_price) / last_price) * 100
-            else:
-                row['price_change'] = 0
-                row['price_change_pct'] = 0
-                
-            self.last_prices[symbol] = data['price']
-            data_rows.append(row)
+        for data_point in all_data_points:
+            # Additional validation
+            if data_point.quality_score > 0.5:  # Only high quality data
+                df_data.append({
+                    'timestamp': data_point.timestamp,
+                    'pair': f"{data_point.symbol}USD",
+                    'symbol': data_point.symbol,
+                    'price': data_point.price,
+                    'volume': data_point.volume,
+                    'high_24h': data_point.high_24h,
+                    'low_24h': data_point.low_24h,
+                    'change_24h': data_point.change_24h,
+                    'change_pct_24h': data_point.change_pct_24h,
+                    'bid': data_point.bid,
+                    'ask': data_point.ask,
+                    'spread': data_point.spread,
+                    'source': data_point.source,
+                    'quality_score': data_point.quality_score
+                })
+                valid_points += 1
         
-        df = pd.DataFrame(data_rows)
+        if not df_data:
+            logger.warning("No valid data points after filtering")
+            return pd.DataFrame()
         
-        # הוספת מידע נוסף
-        df['collection_time'] = datetime.utcnow()
-        df['day_of_week'] = df['timestamp'].dt.day_name()
-        df['hour'] = df['timestamp'].dt.hour
+        df = pd.DataFrame(df_data)
+        
+        # Store in database
+        self._store_in_database(all_data_points)
+        
+        # Save to CSV files (backward compatibility)
+        self._save_to_csv_files(df)
+        
+        # Update collection statistics
+        self.collection_stats['last_update'] = datetime.now()
+        
+        logger.info(f"Enhanced collection completed: {valid_points} valid data points")
         
         return df
     
-    def save_data(self, df: pd.DataFrame):
-        """שמירת נתונים לקבצים"""
-        if df.empty:
-            return
-            
-        # שמירה לקובץ live (דריסה)
-        df.to_csv(self.live_file, index=False, encoding='utf-8')
-        logger.info(f"Saved {len(df)} records to live file")
-        
-        # הוספה להיסטוריה
-        if os.path.exists(self.history_file):
-            # בדיקה שאין כפילויות
-            try:
-                history_df = pd.read_csv(self.history_file, parse_dates=['timestamp'])
-                
-                # סינון רק שורות חדשות
-                last_timestamp = history_df['timestamp'].max()
-                new_rows = df[df['timestamp'] > last_timestamp]
-                
-                if not new_rows.empty:
-                    new_rows.to_csv(self.history_file, mode='a', header=False, index=False, encoding='utf-8')
-                    logger.info(f"Added {len(new_rows)} new records to history")
-                    
-            except Exception as e:
-                logger.error(f"Error updating history: {e}")
-        else:
-            # יצירת קובץ היסטוריה חדש
-            df.to_csv(self.history_file, index=False, encoding='utf-8')
-            logger.info("Created new history file")
-    
-    def clean_history(self, days_to_keep: int = 90):
-        """ניקוי נתונים ישנים מההיסטוריה"""
-        if not os.path.exists(self.history_file):
-            return
-            
+    def _store_in_database(self, data_points: List[MarketDataPoint]):
+        """שמירה בבסיס נתונים"""
         try:
-            df = pd.read_csv(self.history_file, parse_dates=['timestamp'])
-            cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             
-            # סינון נתונים חדשים
-            df_clean = df[df['timestamp'] > cutoff_date]
+            for point in data_points:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO market_data 
+                    (timestamp, symbol, price, volume, high_24h, low_24h, 
+                     change_24h, change_pct_24h, bid, ask, spread, source, quality_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    point.timestamp.isoformat(),
+                    point.symbol,
+                    point.price,
+                    point.volume,
+                    point.high_24h,
+                    point.low_24h,
+                    point.change_24h,
+                    point.change_pct_24h,
+                    point.bid,
+                    point.ask,
+                    point.spread,
+                    point.source,
+                    point.quality_score
+                ))
             
-            # שמירה מחדש
-            if len(df_clean) < len(df):
-                df_clean.to_csv(self.history_file, index=False, encoding='utf-8')
-                logger.info(f"Cleaned history: removed {len(df) - len(df_clean)} old records")
+            conn.commit()
+            conn.close()
+            
+            logger.debug(f"Stored {len(data_points)} data points in database")
+            
+        except Exception as e:
+            logger.error(f"Database storage error: {e}")
+    
+    def _save_to_csv_files(self, df: pd.DataFrame):
+        """שמירה לקבצי CSV (תאימות אחורה)"""
+        try:
+            # Save to live file
+            df.to_csv(Config.MARKET_LIVE_FILE, index=False, encoding='utf-8')
+            
+            # Append to history file
+            if os.path.exists(Config.MARKET_HISTORY_FILE):
+                # Load existing and merge
+                existing_df = pd.read_csv(Config.MARKET_HISTORY_FILE)
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                
+                # Remove duplicates and keep recent data
+                combined_df = combined_df.drop_duplicates(subset=['timestamp', 'symbol', 'source'], keep='last')
+                
+                # Keep only last 30 days
+                combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
+                cutoff_date = datetime.now() - timedelta(days=30)
+                combined_df = combined_df[combined_df['timestamp'] > cutoff_date]
+                
+                combined_df.to_csv(Config.MARKET_HISTORY_FILE, index=False, encoding='utf-8')
+            else:
+                df.to_csv(Config.MARKET_HISTORY_FILE, index=False, encoding='utf-8')
                 
         except Exception as e:
-            logger.error(f"Error cleaning history: {e}")
+            logger.error(f"CSV save error: {e}")
     
-    def get_market_summary(self) -> Dict:
-        """יצירת סיכום שוק"""
-        prices = self.get_combined_prices()
-        
-        if not prices:
-            return {}
+    def get_historical_data(self, symbol: str, 
+                          start_date: Optional[datetime] = None,
+                          end_date: Optional[datetime] = None,
+                          source: Optional[str] = None) -> pd.DataFrame:
+        """קבלת נתונים היסטוריים מהDB"""
+        try:
+            conn = sqlite3.connect(self.db_path)
             
-        # חישוב סטטיסטיקות
-        total_volume = sum(p['volume'] for p in prices.values())
-        avg_change = sum(p['change_pct_24h'] for p in prices.values()) / len(prices)
-        
-        gainers = sorted(
-            [(s, p['change_pct_24h']) for s, p in prices.items() if p['change_pct_24h'] > 0],
-            key=lambda x: x[1],
-            reverse=True
-        )[:5]
-        
-        losers = sorted(
-            [(s, p['change_pct_24h']) for s, p in prices.items() if p['change_pct_24h'] < 0],
-            key=lambda x: x[1]
-        )[:5]
-        
-        return {
-            'timestamp': datetime.utcnow(),
-            'total_symbols': len(prices),
-            'total_volume_24h': total_volume,
-            'avg_change_24h': avg_change,
-            'top_gainers': gainers,
-            'top_losers': losers,
-            'market_sentiment': 'bullish' if avg_change > 0 else 'bearish'
-        }
+            query = "SELECT * FROM market_data WHERE symbol = ?"
+            params = [symbol]
+            
+            if start_date:
+                query += " AND timestamp >= ?"
+                params.append(start_date.isoformat())
+            
+            if end_date:
+                query += " AND timestamp <= ?"
+                params.append(end_date.isoformat())
+            
+            if source:
+                query += " AND source = ?"
+                params.append(source)
+            
+            query += " ORDER BY timestamp ASC"
+            
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            
+            if not df.empty:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error getting historical data: {e}")
+            return pd.DataFrame()
+    
+    def get_data_quality_report(self) -> Dict:
+        """דוח איכות נתונים"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Overall statistics
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total_records,
+                    AVG(quality_score) as avg_quality,
+                    MIN(quality_score) as min_quality,
+                    MAX(quality_score) as max_quality,
+                    COUNT(DISTINCT symbol) as unique_symbols,
+                    COUNT(DISTINCT source) as unique_sources
+                FROM market_data 
+                WHERE timestamp > datetime('now', '-1 day')
+            ''')
+            
+            stats = cursor.fetchone()
+            
+            # Quality by source
+            cursor.execute('''
+                SELECT source, AVG(quality_score) as avg_quality, COUNT(*) as count
+                FROM market_data 
+                WHERE timestamp > datetime('now', '-1 day')
+                GROUP BY source
+            ''')
+            
+            source_stats = cursor.fetchall()
+            
+            conn.close()
+            
+            return {
+                'timestamp': datetime.now(),
+                'collection_stats': self.collection_stats,
+                'data_quality': {
+                    'total_records': stats[0],
+                    'average_quality_score': stats[1],
+                    'min_quality_score': stats[2],
+                    'max_quality_score': stats[3],
+                    'unique_symbols': stats[4],
+                    'unique_sources': stats[5]
+                },
+                'quality_by_source': [
+                    {'source': row[0], 'avg_quality': row[1], 'count': row[2]}
+                    for row in source_stats
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating quality report: {e}")
+            return {'error': str(e)}
+    
+    def cleanup_old_data(self, days_to_keep: int = 30):
+        """ניקוי נתונים ישנים"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM market_data 
+                WHERE timestamp < datetime('now', '-{} days')
+            '''.format(days_to_keep))
+            
+            deleted_rows = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Cleaned up {deleted_rows} old records")
+            
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
     
     def _normalize_kraken_symbol(self, pair: str) -> str:
-        """נרמול סמלי Kraken לפורמט סטנדרטי"""
-        # הסרת USD/ZUSD מהסוף
+        """נרמול סמלי Kraken - משופר"""
+        # Remove USD/ZUSD from the end
         cleaned = pair.replace('USD', '').replace('ZUSD', '')
         
-        # הסרת סיומות (.S = Staked, .F = Futures, .B = Bond, .M = Multi-collateral)
+        # Remove suffixes (.S = Staked, .F = Futures, etc.)
         if '.' in cleaned:
             cleaned = cleaned.split('.')[0]
         
-        # הסרת תווים מיוחדים של Kraken
+        # Remove Kraken prefixes
         cleaned = cleaned.replace('X', '').replace('Z', '')
         
-        # המרות ספציפיות
+        # Enhanced replacements
         replacements = {
-            'XBT': 'BTC',
-            'XETH': 'ETH',
-            'XXRP': 'XRP',
-            'XLTC': 'LTC',
-            'XXLM': 'XLM',
-            'XDOGE': 'DOGE',
-            'XETC': 'ETC',
-            'XMLN': 'MLN',
-            'XREP': 'REP',
-            'XXMR': 'XMR',
-            'XXTZ': 'XTZ',
-            'XZEC': 'ZEC',
-            'XICN': 'ICN',
-            'XLTC': 'LTC',
-            'XNMC': 'NMC',
-            'XXDG': 'XDG',
-            'XXLM': 'XLM',
-            'XXRP': 'XRP',
-            'XXVN': 'XVN',
-            # Staking variants
-            'ADAXS': 'ADA',
-            'ATOMXS': 'ATOM',
-            'DOTXS': 'DOT',
-            'FLOWHS': 'FLOW',
-            'KSMXS': 'KSM',
-            'SCRTBS': 'SCRT',
-            'SOLXS': 'SOL',
-            'MATICXS': 'MATIC',
-            'USDCM': 'USDC',
-            'USDTM': 'USDT',
-            'ETHW': 'ETH',
-            'LUNA2': 'LUNA',
-            'LUNA': 'LUNC',
+            'XBT': 'BTC', 'XETH': 'ETH', 'XXRP': 'XRP', 'XLTC': 'LTC',
+            'XXLM': 'XLM', 'XDOGE': 'DOGE', 'XETC': 'ETC', 'XMLN': 'MLN',
+            'XREP': 'REP', 'XXMR': 'XMR', 'XXTZ': 'XTZ', 'XZEC': 'ZEC',
+            'ADAXS': 'ADA', 'ATOMXS': 'ATOM', 'DOTXS': 'DOT', 'FLOWHS': 'FLOW',
+            'KSMXS': 'KSM', 'SCRTBS': 'SCRT', 'SOLXS': 'SOL', 'MATICXS': 'MATIC',
+            'USDCM': 'USDC', 'USDTM': 'USDT', 'ETHW': 'ETH', 'LUNA2': 'LUNA'
         }
         
-        # החלפה לפי המילון
-        for old, new in replacements.items():
-            if cleaned == old or cleaned.startswith(old):
-                return new
-        
-        return cleaned
+        return replacements.get(cleaned, cleaned)
 
 
-def run_collector(interval: int = 30):
-    """הפעלת לולאת איסוף נתונים"""
-    collector = MarketCollector()
+# Main collection runner with enhanced features
+def run_enhanced_collector(interval: int = 30, max_symbols: int = 50):
+    """הפעלת איסוף משופר"""
+    collector = EnhancedMarketCollector()
     
-    logger.info(f"Market collector started - interval: {interval}s")
-    logger.info(f"Using: Kraken={collector.use_kraken}, Binance={collector.use_binance}")
-    
-    # ניקוי היסטוריה בהפעלה
-    collector.clean_history()
+    logger.info(f"Enhanced market collector started - interval: {interval}s")
     
     error_count = 0
-    max_errors = 10
+    max_errors = 5
     
     while True:
         try:
             start_time = time.time()
             
-            # איסוף נתונים
-            df = collector.collect_market_data()
+            # Get available symbols (limited for performance)
+            symbols = Config.DEFAULT_COINS[:max_symbols]
+            
+            # Collect data
+            df = collector.collect_and_store_enhanced(symbols)
             
             if not df.empty:
-                # שמירה
-                collector.save_data(df)
+                # Generate quality report every 10 collections
+                if collector.collection_stats['total_requests'] % 10 == 0:
+                    quality_report = collector.get_data_quality_report()
+                    logger.info(
+                        f"Quality Report - Avg Score: {quality_report.get('data_quality', {}).get('average_quality_score', 0):.2f}, "
+                        f"Records: {quality_report.get('data_quality', {}).get('total_records', 0)}"
+                    )
                 
-                # הצגת סיכום
-                summary = collector.get_market_summary()
-                logger.info(
-                    f"Collected {summary['total_symbols']} symbols | "
-                    f"Market: {summary['market_sentiment']} ({summary['avg_change_24h']:.2f}%)"
-                )
+                # Cleanup old data periodically
+                if collector.collection_stats['total_requests'] % 100 == 0:
+                    collector.cleanup_old_data()
                 
-                # איפוס מונה שגיאות
-                error_count = 0
+                error_count = 0  # Reset error count on success
+                
             else:
                 logger.warning("No data collected in this cycle")
-                
-            # חישוב זמן המתנה
+            
+            # Dynamic sleep based on performance
             elapsed = time.time() - start_time
             sleep_time = max(0, interval - elapsed)
             
             if sleep_time > 0:
-                logger.debug(f"Sleeping for {sleep_time:.1f}s")
                 time.sleep(sleep_time)
                 
         except KeyboardInterrupt:
-            logger.info("Market collector stopped by user")
+            logger.info("Enhanced market collector stopped by user")
             break
             
         except Exception as e:
             error_count += 1
-            logger.error(f"Collection error ({error_count}/{max_errors}): {e}", exc_info=True)
+            logger.error(f"Enhanced collection error ({error_count}/{max_errors}): {e}")
             
             if error_count >= max_errors:
-                logger.critical("Too many errors, stopping collector")
+                logger.critical("Too many errors, stopping enhanced collector")
                 break
-                
-            # המתנה מוגברת לאחר שגיאה
-            time.sleep(min(interval * 2, 300))
+            
+            time.sleep(interval * 2)  # Wait longer after error
     
-    logger.info("Market collector shutdown complete")
-
-
-def test_collector():
-    """בדיקת איסוף נתונים"""
-    print("\n🧪 בודק איסוף נתוני שוק...")
-    print("="*50)
-    
-    collector = MarketCollector()
-    
-    # בדיקת זמינות APIs
-    print("\n📡 בדיקת חיבורים:")
-    print(f"  • Kraken API: {'✅ זמין' if collector.use_kraken else '❌ לא זמין'}")
-    print(f"  • Binance API: {'✅ זמין' if collector.use_binance else '❌ לא זמין'}")
-    
-    # בדיקת איסוף
-    print("\n📊 בודק איסוף נתונים...")
-    test_symbols = ['BTC', 'ETH', 'SOL']
-    
-    # Kraken
-    if collector.use_kraken:
-        kraken_prices = collector.get_kraken_prices(test_symbols)
-        print(f"\nKraken - נמצאו {len(kraken_prices)} מחירים:")
-        for symbol, data in kraken_prices.items():
-            print(f"  • {symbol}: ${data['price']:,.2f} ({data['change_pct_24h']:+.2f}%)")
-    
-    # Binance
-    if collector.use_binance:
-        binance_prices = collector.get_binance_prices(test_symbols)
-        print(f"\nBinance - נמצאו {len(binance_prices)} מחירים:")
-        for symbol, data in binance_prices.items():
-            print(f"  • {symbol}: ${data['price']:,.2f} ({data['change_pct_24h']:+.2f}%)")
-    
-    # איסוף משולב
-    print("\n🔄 בודק איסוף משולב...")
-    df = collector.collect_market_data(test_symbols)
-    
-    if not df.empty:
-        print(f"\n✅ נאספו {len(df)} רשומות:")
-        print(df[['symbol', 'price', 'change_pct_24h', 'volume', 'source']].to_string(index=False))
-        
-        # סיכום שוק
-        summary = collector.get_market_summary()
-        print(f"\n📈 סיכום שוק:")
-        print(f"  • סנטימנט: {summary['market_sentiment']}")
-        print(f"  • שינוי ממוצע: {summary['avg_change_24h']:.2f}%")
-        
-        if summary['top_gainers']:
-            print(f"\n🚀 עליות חדות:")
-            for symbol, change in summary['top_gainers'][:3]:
-                print(f"  • {symbol}: +{change:.2f}%")
-    else:
-        print("\n❌ לא נאספו נתונים")
-    
-    print("\n✅ הבדיקה הושלמה")
+    logger.info("Enhanced market collector shutdown complete")
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Market Data Collector')
-    parser.add_argument('--test', action='store_true', help='Run test mode')
-    parser.add_argument('--interval', type=int, default=30, help='Collection interval in seconds')
-    parser.add_argument('--symbols', nargs='+', help='Specific symbols to collect')
-    
-    args = parser.parse_args()
-    
-    if args.test:
-        test_collector()
-    else:
-        # הפעלת איסוף רגיל
-        print(f"Starting market collector (interval: {args.interval}s)")
-        print("Press Ctrl+C to stop")
-        
-        try:
-            run_collector(interval=args.interval)
-        except KeyboardInterrupt:
-            print("\n👋 Market collector stopped")
+    run_enhanced_collector(interval=30, max_symbols=30)
