@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Kraken Trading Bot v2.0 - Main Entry Point (Updated)
-====================================================
+Kraken Trading Bot v2.0 - Main Entry Point (Updated & Fixed)
+============================================================
 מערכת מסחר אוטומטית מתקדמת עם AI - גרסה מתוקנת
 """
 
@@ -66,7 +66,6 @@ class TradingBotManager:
             'models': 'ML models (optional)'
         }
         
-        missing_dirs = []
         for dir_name, description in required_dirs.items():
             dir_path = os.path.join(BASE_DIR, dir_name)
             if not os.path.exists(dir_path):
@@ -93,7 +92,7 @@ class TradingBotManager:
                 print(f"❌ {package} - {description} (MISSING)")
         
         if missing_packages:
-            print(f"\\n⚠️  Missing packages: {', '.join(missing_packages)}")
+            print(f"\n⚠️  Missing packages: {', '.join(missing_packages)}")
             print("Run: pip install -r requirements.txt")
         
         # בדיקת קבצי הגדרות
@@ -105,12 +104,15 @@ class TradingBotManager:
         else:
             print("✅ .env configuration file found")
         
-        # בדיקת מפתחות API
-        api_status = Config.validate_keys()
-        if api_status:
-            print("✅ API keys configured")
-        else:
-            print("⚠️  Some API keys missing - limited functionality")
+        # בדיקת מפתחות API - גרסה מתוקנת
+        try:
+            api_status = Config.validate_keys()
+            if api_status:
+                print("✅ API keys configured")
+            else:
+                print("⚠️  Some API keys missing - limited functionality")
+        except Exception as e:
+            print(f"⚠️  Error checking API keys: {e}")
     
     def _create_env_example(self):
         """יצירת קובץ .env.example מתקדם"""
@@ -154,13 +156,13 @@ TAKE_PROFIT_PERCENT=10
         print(banner)
     
     def show_menu(self):
-        """תפריט ראשי משופר עם בדיקת זמינות"""
+        """תפריט ראשי משופר עם בדיקת זמינות - גרסה מתוקנת"""
         self.print_banner()
         
-        print("\\n🎯 Main Menu:")
+        print("\n🎯 Main Menu:")
         print("═" * 60)
         
-        # בדיקת זמינות features
+        # בדיקת זמינות features - גרסה מתוקנת
         features_status = self._check_features_availability()
         
         menu_options = [
@@ -182,22 +184,22 @@ TAKE_PROFIT_PERCENT=10
             color = "" if available else " (unavailable)"
             print(f"  {key}. {status} {desc}{color}")
         
-        print("\\n" + "═" * 60)
+        print("\n" + "═" * 60)
         
         # הצגת סטטוס מערכת
         self._show_system_status()
         
-        choice = input("\\n👉 Your choice: ").strip()
+        choice = input("\n👉 Your choice: ").strip()
         
         # מיפוי בחירות
         choice_map = {opt[0]: opt[2] for opt in menu_options}
         return choice_map.get(choice, "invalid")
     
     def _check_features_availability(self):
-        """בדיקת זמינות features"""
+        """בדיקת זמינות features - גרסה מתוקנת"""
         status = {
             'data_collection': True,
-            'ai_features': bool(Config.OPENAI_API_KEY),
+            'ai_features': bool(Config.get_api_key('OPENAI_API_KEY')),  # תוקן כאן!
             'simulations': True,
             'analysis': True,
             'full_system': True
@@ -213,7 +215,7 @@ TAKE_PROFIT_PERCENT=10
         
         try:
             from ai_trading_engine import AITradingEngine
-            status['ai_features'] = True
+            status['ai_features'] = status['ai_features'] and True
         except ImportError:
             status['ai_features'] = False
         
@@ -226,12 +228,17 @@ TAKE_PROFIT_PERCENT=10
         return status
     
     def _show_system_status(self):
-        """הצגת סטטוס מערכת"""
-        print("\\n📊 System Status:")
+        """הצגת סטטוס מערכת - גרסה מתוקנת"""
+        print("\n📊 System Status:")
         print(f"  • Version: {self.version}")
         print(f"  • Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"  • API Keys: {'✅ Configured' if Config.KRAKEN_API_KEY else '❌ Missing'}")
-        print(f"  • AI Features: {'✅ Available' if Config.OPENAI_API_KEY else '⚠️  Limited'}")
+        
+        # API Keys status - גרסה מתוקנת
+        kraken_key_status = Config.get_api_key_status('KRAKEN_API_KEY')
+        openai_key_status = Config.get_api_key_status('OPENAI_API_KEY')
+        
+        print(f"  • API Keys: {'✅ Configured' if kraken_key_status.get('configured') else '❌ Missing'}")
+        print(f"  • AI Features: {'✅ Available' if openai_key_status.get('configured') else '⚠️  Limited'}")
         
         # בדיקת קבצי נתונים
         data_files = ['market_live.csv', 'market_history.csv', 'news_feed.csv']
@@ -268,7 +275,7 @@ TAKE_PROFIT_PERCENT=10
                 print(f"  - {path}")
             return
         
-        print("\\n🚀 Starting Simple Dashboard...")
+        print("\n🚀 Starting Simple Dashboard...")
         print(f"📍 Location: {dashboard_path}")
         print("🌐 Opening browser at http://localhost:8501")
         print("⏹️  Press Ctrl+C to stop")
@@ -286,14 +293,14 @@ TAKE_PROFIT_PERCENT=10
             
             self.processes['dashboard'] = process
             
-            print("\\n✅ Dashboard is running!")
+            print("\n✅ Dashboard is running!")
             print("   • URL: http://localhost:8501")
             print("   • Press Ctrl+C to stop")
             
             try:
                 process.wait()
             except KeyboardInterrupt:
-                print("\\n⏹️  Stopping dashboard...")
+                print("\n⏹️  Stopping dashboard...")
                 process.terminate()
                 process.wait(timeout=5)
                 
@@ -304,7 +311,7 @@ TAKE_PROFIT_PERCENT=10
     
     def run_data_collection(self):
         """הפעלת איסוף נתונים עם error handling"""
-        print("\\n📊 Initializing Data Collection System...")
+        print("\n📊 Initializing Data Collection System...")
         
         # בדיקת modules
         modules_status = {}
@@ -329,7 +336,7 @@ TAKE_PROFIT_PERCENT=10
             print("❌ No collection modules available")
             return
         
-        print("\\n🔄 Starting collection processes...")
+        print("\n🔄 Starting collection processes...")
         
         # Market Collector
         if modules_status['market']:
@@ -359,11 +366,11 @@ TAKE_PROFIT_PERCENT=10
             news_thread.start()  
             print("✅ News collection started (5min intervals)")
         
-        print("\\n📊 Data Collection Status:")
+        print("\n📊 Data Collection Status:")
         print("  • Market data: Every 30 seconds")
         print("  • News feed: Every 5 minutes")
         print("  • Files saved to: data/")
-        print("\\n⏹️  Press Ctrl+C to stop all collection")
+        print("\n⏹️  Press Ctrl+C to stop all collection")
         
         try:
             while True:
@@ -371,7 +378,7 @@ TAKE_PROFIT_PERCENT=10
                 current_time = datetime.now().strftime('%H:%M:%S')
                 print(f"[{current_time}] ⚡ System running... (Ctrl+C to stop)")
         except KeyboardInterrupt:
-            print("\\n⏹️  Stopping data collection...")
+            print("\n⏹️  Stopping data collection...")
             print("✅ Collection stopped")
     
     def run_ai_dashboard(self):
@@ -392,13 +399,14 @@ TAKE_PROFIT_PERCENT=10
             self.run_simple_dashboard()
             return
         
-        print("\\n🤖 Starting AI Trading Dashboard...")
+        print("\n🤖 Starting AI Trading Dashboard...")
         print("⚠️  Warning: This includes autonomous trading features!")
         
-        if not Config.KRAKEN_API_KEY:
+        # בדיקת API keys - גרסה מתוקנת
+        if not Config.get_api_key('KRAKEN_API_KEY'):
             print("⚠️  Note: No API keys - running in demo mode")
         
-        confirm = input("\\nContinue? (yes/no): ").lower()
+        confirm = input("\nContinue? (yes/no): ").lower()
         if confirm not in ['yes', 'y']:
             return
         
@@ -410,13 +418,13 @@ TAKE_PROFIT_PERCENT=10
             
             self.processes['ai_dashboard'] = process
             
-            print("\\n✅ AI Dashboard is running!")
+            print("\n✅ AI Dashboard is running!")
             print("🌐 Open browser at http://localhost:8502")
             
             try:
                 process.wait()
             except KeyboardInterrupt:
-                print("\\n⏹️  Stopping AI dashboard...")
+                print("\n⏹️  Stopping AI dashboard...")
                 process.terminate()
                 
         except Exception as e:
@@ -426,7 +434,7 @@ TAKE_PROFIT_PERCENT=10
     
     def run_full_system(self):
         """הפעלת מערכת מלאה עם ניהול תהליכים"""
-        print("\\n🚀 Starting Full Trading System...")
+        print("\n🚀 Starting Full Trading System...")
         print("="*50)
         
         # בדיקת דרישות
@@ -439,7 +447,7 @@ TAKE_PROFIT_PERCENT=10
             print(f"⚠️  Some features unavailable: {', '.join(missing_features)}")
             print("System will run with available features only.")
             
-            proceed = input("\\nContinue? (yes/no): ").lower()
+            proceed = input("\nContinue? (yes/no): ").lower()
             if proceed not in ['yes', 'y']:
                 return
         
@@ -448,7 +456,7 @@ TAKE_PROFIT_PERCENT=10
         try:
             # 1. Start data collection
             if required_features['data_collection']:
-                print("\\n📊 Starting data collection...")
+                print("\n📊 Starting data collection...")
                 data_thread = threading.Thread(
                     target=self.run_data_collection_background, 
                     daemon=True
@@ -458,7 +466,7 @@ TAKE_PROFIT_PERCENT=10
                 time.sleep(2)  # Stagger startup
             
             # 2. Start dashboard
-            print("\\n🖥️  Starting dashboard...")
+            print("\n🖥️  Starting dashboard...")
             dashboard_thread = threading.Thread(
                 target=self.run_dashboard_background,
                 daemon=True
@@ -466,16 +474,16 @@ TAKE_PROFIT_PERCENT=10
             dashboard_thread.start()
             processes.append(('Dashboard', dashboard_thread))
             
-            print("\\n✅ Full system started!")
+            print("\n✅ Full system started!")
             print("📊 Components running:")
             for name, _ in processes:
                 print(f"  • {name}")
             
-            print("\\n🌐 Access points:")
+            print("\n🌐 Access points:")
             print("  • Main Dashboard: http://localhost:8501")
             print("  • AI Dashboard: http://localhost:8502")
             
-            print("\\n⏹️  Press Ctrl+C to stop all components")
+            print("\n⏹️  Press Ctrl+C to stop all components")
             
             # Keep main thread alive
             while True:
@@ -483,7 +491,7 @@ TAKE_PROFIT_PERCENT=10
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Full system running...")
                 
         except KeyboardInterrupt:
-            print("\\n⏹️  Shutting down full system...")
+            print("\n⏹️  Shutting down full system...")
             self._cleanup_processes()
             print("✅ Full system stopped")
     
@@ -511,7 +519,7 @@ TAKE_PROFIT_PERCENT=10
     
     def run_simulations(self):
         """הפעלת סימולציות"""
-        print("\\n🧪 Trading Simulation System")
+        print("\n🧪 Trading Simulation System")
         print("="*40)
         
         try:
@@ -523,7 +531,7 @@ TAKE_PROFIT_PERCENT=10
             
             try:
                 from simulation_core import optimize_simulation_params
-                print("\\n📊 Running parameter optimization...")
+                print("\n📊 Running parameter optimization...")
                 optimize_simulation_params()
             except ImportError:
                 print("❌ Simulation core not available")
@@ -531,7 +539,7 @@ TAKE_PROFIT_PERCENT=10
     
     def show_analysis(self):
         """הצגת ניתוח שוק"""
-        print("\\n📈 Market Analysis Tools")
+        print("\n📈 Market Analysis Tools")
         print("="*40)
         
         try:
@@ -547,7 +555,7 @@ TAKE_PROFIT_PERCENT=10
             prices = collector.get_combined_prices(symbols)
             
             if prices:
-                print("\\n💰 Current Market Status:")
+                print("\n💰 Current Market Status:")
                 print("-" * 50)
                 
                 for symbol, data in prices.items():
@@ -563,7 +571,7 @@ TAKE_PROFIT_PERCENT=10
                 avg_change = sum(data.get('change_pct_24h', 0) for data in prices.values()) / len(prices)
                 total_volume = sum(data.get('volume', 0) for data in prices.values())
                 
-                print("\\n📊 Market Summary:")
+                print("\n📊 Market Summary:")
                 print(f"  • Average Change: {avg_change:+.2f}%")
                 print(f"  • Total Volume: ${total_volume:,.0f}")
                 print(f"  • Market Sentiment: {'Bullish' if avg_change > 0 else 'Bearish'}")
@@ -577,7 +585,7 @@ TAKE_PROFIT_PERCENT=10
         except Exception as e:
             print(f"❌ Analysis error: {e}")
         
-        input("\\nPress Enter to continue...")
+        input("\nPress Enter to continue...")
     
     def _cleanup_processes(self):
         """ניקוי תהליכים"""
@@ -590,86 +598,34 @@ TAKE_PROFIT_PERCENT=10
                 except subprocess.TimeoutExpired:
                     process.kill()
     
-    def run(self):
-        """הפעלה ראשית עם error handling משופר"""
-        while True:
-            try:
-                choice = self.show_menu()
-                
-                if choice == "exit":
-                    print("\\n👋 Thank you for using Kraken Trading Bot!")
-                    print("💎 Safe trading!")
-                    break
-                    
-                elif choice == "simple_dashboard":
-                    self.run_simple_dashboard()
-                    
-                elif choice == "collect_data":
-                    self.run_data_collection()
-                    
-                elif choice == "ai_dashboard":
-                    self.run_ai_dashboard()
-                    
-                elif choice == "full_system":
-                    self.run_full_system()
-                    
-                elif choice == "simulations":
-                    self.run_simulations()
-                    
-                elif choice == "analysis":
-                    self.show_analysis()
-                    
-                elif choice == "settings":
-                    self.show_settings()
-                    
-                elif choice == "symbols":
-                    self._update_trading_symbols()
-                    
-                elif choice == "debug":
-                    self.run_debug()
-                    
-                elif choice == "docs":
-                    self.show_docs()
-                    
-                elif choice == "invalid":
-                    print("❌ Invalid choice. Please select a number from the menu.")
-                    time.sleep(1)
-                    
-            except KeyboardInterrupt:
-                print("\\n\\n⚠️  Interrupted by user")
-                break
-            except Exception as e:
-                logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
-                print(f"❌ Unexpected error: {e}")
-                print("The system will continue running...")
-                time.sleep(2)
-    
     def show_settings(self):
-        """הצגת הגדרות מערכת מתקדמת"""
-        print("\\n⚙️  System Settings & Configuration")
+        """הצגת הגדרות מערכת מתקדמת - גרסה מתוקנת"""
+        print("\n⚙️  System Settings & Configuration")
         print("="*60)
         
-        # API Keys Status
-        print("\\n🔑 API Configuration:")
+        # API Keys Status - גרסה מתוקנת
+        print("\n🔑 API Configuration:")
         api_keys = [
-            ('Kraken API Key', Config.KRAKEN_API_KEY, 'Required for live trading'),
-            ('Kraken API Secret', Config.KRAKEN_API_SECRET, 'Required for live trading'),
-            ('OpenAI API Key', Config.OPENAI_API_KEY, 'Optional - AI features'),
-            ('CryptoPanic API Key', Config.CRYPTOPANIC_API_KEY, 'Optional - news analysis')
+            ('Kraken API Key', 'KRAKEN_API_KEY', 'Required for live trading'),
+            ('Kraken API Secret', 'KRAKEN_API_SECRET', 'Required for live trading'),
+            ('OpenAI API Key', 'OPENAI_API_KEY', 'Optional - AI features'),
+            ('CryptoPanic API Key', 'CRYPTOPANIC_API_KEY', 'Optional - news analysis')
         ]
         
-        for name, key, description in api_keys:
-            status = "✅ Configured" if key else "❌ Missing"
-            masked_key = f"...{key[-8:]}" if key and len(key) > 8 else "Not set"
+        for name, key_name, description in api_keys:
+            key_status = Config.get_api_key_status(key_name)
+            status = "✅ Configured" if key_status.get('configured') else "❌ Missing"
+            masked_key = key_status.get('masked_value', 'Not set')
             print(f"  • {name:<20} | {status:<12} | {masked_key:<15} | {description}")
         
-        # Trading Parameters  
-        print("\\n💰 Trading Parameters:")
-        for key, value in Config.DEFAULT_TRADING_PARAMS.items():
+        # Trading Parameters - גרסה מתוקנת
+        print("\n💰 Trading Parameters:")
+        default_params = Config.DEFAULT_TRADING_PARAMS
+        for key, value in default_params.items():
             print(f"  • {key:<20} | {value}")
         
         # System Status
-        print("\\n🖥️  System Information:")
+        print("\n🖥️  System Information:")
         print(f"  • Python Version    | {sys.version.split()[0]}")
         print(f"  • Working Directory | {BASE_DIR}")
         print(f"  • Config File       | {'✅ Found' if os.path.exists('.env') else '❌ Missing'}")
@@ -677,7 +633,7 @@ TAKE_PROFIT_PERCENT=10
         print(f"  • Logs Directory    | {Config.LOGS_DIR}")
         
         # File Status
-        print("\\n📁 Data Files Status:")
+        print("\n📁 Data Files Status:")
         data_files = [
             ('market_live.csv', 'Live market data'),
             ('market_history.csv', 'Historical market data'), 
@@ -695,88 +651,94 @@ TAKE_PROFIT_PERCENT=10
             else:
                 print(f"  • {filename:<20} | ❌ Not found  |           | {description}")
         
-        input("\\nPress Enter to continue...")
+        input("\nPress Enter to continue...")
     
     def _update_trading_symbols(self):
-        """עדכון רשימת מטבעות למסחר"""
-        print("\\n🪙 Symbol & Asset Manager")
+        """עדכון רשימת מטבעות למסחר - גרסה מתוקנת"""
+        print("\n🪙 Symbol & Asset Manager")
         print("="*50)
         
         try:
             from market_collector import MarketCollector
             
-            print("\\n1. View current symbol configuration")
+            print("\n1. View current symbol configuration")
             print("2. Update symbol list from Kraken")
             print("3. Set custom symbol list")
             print("4. Reset to default symbols")
             print("5. Test symbol connectivity")
             
-            choice = input("\\nChoice: ").strip()
+            choice = input("\nChoice: ").strip()
             
             if choice == '1':
-                # הצגת הגדרות נוכחיות
-                print(f"\\n📊 Current Configuration:")
-                print(f"  • Use all symbols: {Config.TRADING_SETTINGS['use_all_symbols']}")
-                print(f"  • Max symbols: {Config.TRADING_SETTINGS['max_symbols']}")
-                print(f"  • Priority symbols: {', '.join(Config.TRADING_SETTINGS['priority_symbols'])}")
+                # הצגת הגדרות נוכחיות - גרסה מתוקנת
+                print(f"\n📊 Current Configuration:")
+                print(f"  • Use all symbols: {Config.TRADING_SETTINGS.get('use_all_symbols', False)}")
+                print(f"  • Max symbols: {Config.TRADING_SETTINGS.get('max_symbols', 50)}")
+                print(f"  • Priority symbols: {', '.join(Config.TRADING_SETTINGS.get('priority_symbols', []))}")
                 print(f"  • Default coins: {', '.join(Config.DEFAULT_COINS)}")
                 
             elif choice == '2':
                 # עדכון מ-Kraken
                 collector = MarketCollector()
-                print("\\n⏳ Fetching available symbols from Kraken...")
+                print("\n⏳ Fetching available symbols from Kraken...")
                 
-                symbols = collector.get_all_available_symbols()
-                print(f"\\n✅ Found {len(symbols)} available symbols")
-                print(f"Examples: {', '.join(symbols[:10])}...")
-                
-                if input("\\nUpdate system to use all available symbols? (y/n): ").lower() == 'y':
-                    Config.TRADING_SETTINGS['use_all_symbols'] = True
-                    print("✅ Updated to use all available symbols")
+                try:
+                    symbols = collector.get_all_available_symbols()
+                    print(f"\n✅ Found {len(symbols)} available symbols")
+                    print(f"Examples: {', '.join(symbols[:10])}...")
+                    
+                    if input("\nUpdate system to use all available symbols? (y/n): ").lower() == 'y':
+                        Config.TRADING_SETTINGS['use_all_symbols'] = True
+                        print("✅ Updated to use all available symbols")
+                except Exception as e:
+                    print(f"❌ Error fetching symbols: {e}")
                 
             elif choice == '3':
                 # רשימה מותאמת
-                print("\\nEnter symbols separated by commas (e.g., BTC,ETH,SOL):")
+                print("\nEnter symbols separated by commas (e.g., BTC,ETH,SOL):")
                 custom_input = input("> ").upper().strip()
                 
                 if custom_input:
                     custom_symbols = [s.strip() for s in custom_input.split(',')]
                     Config.DEFAULT_COINS = custom_symbols
                     Config.TRADING_SETTINGS['use_all_symbols'] = False
-                    print(f"\\n✅ Set {len(custom_symbols)} custom symbols: {', '.join(custom_symbols)}")
+                    print(f"\n✅ Set {len(custom_symbols)} custom symbols: {', '.join(custom_symbols)}")
                 
             elif choice == '4':
                 # איפוס לברירת מחדל
                 Config.DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'MATIC', 'LINK', 'AVAX', 'XRP']
                 Config.TRADING_SETTINGS['use_all_symbols'] = False
-                print(f"\\n✅ Reset to default symbols: {', '.join(Config.DEFAULT_COINS)}")
+                print(f"\n✅ Reset to default symbols: {', '.join(Config.DEFAULT_COINS)}")
                 
             elif choice == '5':
                 # בדיקת קישוריות
                 collector = MarketCollector()
                 test_symbols = Config.DEFAULT_COINS[:5]
                 
-                print(f"\\n🔍 Testing connectivity for: {', '.join(test_symbols)}")
+                print(f"\n🔍 Testing connectivity for: {', '.join(test_symbols)}")
                 
-                prices = collector.get_combined_prices(test_symbols)
-                
-                if prices:
-                    print("\\n✅ Connectivity test successful:")
-                    for symbol, data in prices.items():
-                        print(f"  • {symbol}: ${data['price']:,.2f}")
-                else:
-                    print("\\n❌ Connectivity test failed")
+                try:
+                    prices = collector.get_combined_prices(test_symbols)
+                    
+                    if prices:
+                        print("\n✅ Connectivity test successful:")
+                        for symbol, data in prices.items():
+                            print(f"  • {symbol}: ${data['price']:,.2f}")
+                    else:
+                        print("\n❌ Connectivity test failed")
+                except Exception as e:
+                    print(f"\n❌ Connectivity error: {e}")
                     
         except ImportError:
             print("❌ Market collector module not available")
         except Exception as e:
             print(f"❌ Error: {e}")
         
-        input("\\nPress Enter to continue...")
+        input("\nPress Enter to continue...")
     
     def run_debug(self):
         """הפעלת כלי debug מתקדם"""
-        print("\\n🔧 System Diagnostics & Debug Tools")
+        print("\n🔧 System Diagnostics & Debug Tools")
         print("="*50)
         
         debug_options = [
@@ -788,17 +750,17 @@ TAKE_PROFIT_PERCENT=10
             ("6", "🔧 Full System Diagnostics", self._debug_full_system)
         ]
         
-        print("\\nDiagnostic Options:")
+        print("\nDiagnostic Options:")
         for key, desc, _ in debug_options:
             print(f"  {key}. {desc}")
         
-        choice = input("\\nSelect diagnostic (1-6): ").strip()
+        choice = input("\nSelect diagnostic (1-6): ").strip()
         
         debug_map = {opt[0]: opt[2] for opt in debug_options}
         debug_func = debug_map.get(choice)
         
         if debug_func:
-            print("\\n" + "="*50)
+            print("\n" + "="*50)
             debug_func()
         else:
             print("❌ Invalid choice")
@@ -810,8 +772,8 @@ TAKE_PROFIT_PERCENT=10
             test_connection()
         except ImportError:
             print("❌ Debug Kraken module not found")
-            # Basic API test
-            if Config.KRAKEN_API_KEY:
+            # Basic API test - גרסה מתוקנת
+            if Config.get_api_key('KRAKEN_API_KEY'):
                 print("✅ API Key configured")
                 print("💡 For full API test, ensure debug_kraken.py is available")
             else:
@@ -922,19 +884,19 @@ TAKE_PROFIT_PERCENT=10
         ]
         
         for test_name, test_func in tests:
-            print(f"\\n🔍 Testing {test_name}...")
+            print(f"\n🔍 Testing {test_name}...")
             try:
                 test_func()
                 print(f"✅ {test_name} - PASSED")
             except Exception as e:
                 print(f"❌ {test_name} - FAILED: {e}")
         
-        print("\\n" + "="*50)
+        print("\n" + "="*50)
         print("✅ Full diagnostics complete!")
     
     def show_docs(self):
         """הצגת תיעוד מערכת"""
-        print("\\n📚 System Documentation & Help")
+        print("\n📚 System Documentation & Help")
         print("="*50)
         
         docs_menu = [
@@ -951,7 +913,7 @@ TAKE_PROFIT_PERCENT=10
         for key, title in docs_menu:
             print(f"  {key}. {title}")
         
-        choice = input("\\nSelect topic (1-8, or Enter to go back): ").strip()
+        choice = input("\nSelect topic (1-8, or Enter to go back): ").strip()
         
         if choice == "1":
             self._show_quick_start_guide()
@@ -971,11 +933,11 @@ TAKE_PROFIT_PERCENT=10
             self._show_security_guide()
         
         if choice in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            input("\\nPress Enter to continue...")
+            input("\nPress Enter to continue...")
     
     def _show_quick_start_guide(self):
         """מדריך התחלה מהירה"""
-        print("\\n🚀 Quick Start Guide")
+        print("\n🚀 Quick Start Guide")
         print("="*40)
         print("""
 1. INSTALLATION:
@@ -1007,7 +969,7 @@ TAKE_PROFIT_PERCENT=10
     
     def _show_dashboard_guide(self):
         """מדריך דאשבורד"""
-        print("\\n📊 Dashboard User Guide")
+        print("\n📊 Dashboard User Guide")
         print("="*40)
         print("""
 SIMPLE DASHBOARD:
@@ -1038,7 +1000,7 @@ TROUBLESHOOTING:
     
     def _show_ai_features_guide(self):
         """מדריך תכונות AI"""
-        print("\\n🤖 AI Trading Features Guide")
+        print("\n🤖 AI Trading Features Guide")
         print("="*40)
         print("""
 AI TRADING MODES:
@@ -1074,7 +1036,7 @@ REQUIREMENTS:
     
     def _show_api_config_guide(self):
         """מדריך הגדרת API"""
-        print("\\n⚙️  API Configuration Guide")
+        print("\n⚙️  API Configuration Guide")
         print("="*40)
         print("""
 KRAKEN API SETUP:
@@ -1109,7 +1071,7 @@ TESTING:
     
     def _show_simulations_guide(self):
         """מדריך סימולציות"""
-        print("\\n🧪 Trading Simulations Guide")
+        print("\n🧪 Trading Simulations Guide")
         print("="*40)
         print("""
 SIMULATION TYPES:
@@ -1147,7 +1109,7 @@ BEST PRACTICES:
     
     def _show_troubleshooting_guide(self):
         """מדריך פתרון בעיות"""
-        print("\\n🔧 Troubleshooting Guide")
+        print("\n🔧 Troubleshooting Guide")
         print("="*40)
         print("""
 COMMON ISSUES:
@@ -1190,7 +1152,7 @@ GETTING HELP:
     
     def _show_analysis_guide(self):
         """מדריך כלי ניתוח"""
-        print("\\n📈 Market Analysis Tools Guide")
+        print("\n📈 Market Analysis Tools Guide")
         print("="*40)
         print("""
 AVAILABLE ANALYSIS:
@@ -1262,6 +1224,67 @@ OPERATIONAL SECURITY:
 • Have contingency plans
 • Keep manual override capabilities
         """)
+    
+    def run(self):
+        """הפעלה ראשית עם error handling משופר"""
+        while True:
+            try:
+                choice = self.show_menu()
+                
+                if choice == "exit":
+                    print("\n👋 Thank you for using Kraken Trading Bot!")
+                    print("💎 Safe trading!")
+                    break
+                    
+                elif choice == "simple_dashboard":
+                    self.run_simple_dashboard()
+                    
+                elif choice == "collect_data":
+                    self.run_data_collection()
+                    
+                elif choice == "ai_dashboard":
+                    self.run_ai_dashboard()
+                    
+                elif choice == "full_system":
+                    self.run_full_system()
+                    
+                elif choice == "simulations":
+                    self.run_simulations()
+                    
+                elif choice == "analysis":
+                    self.show_analysis()
+                    
+                elif choice == "settings":
+                    self.show_settings()
+                    
+                elif choice == "symbols":
+                    self._update_trading_symbols()
+                    
+                elif choice == "debug":
+                    self.run_debug()
+                    
+                elif choice == "docs":
+                    self.show_docs()
+                    
+                elif choice == "invalid":
+                    print("❌ Invalid choice. Please select a number from the menu.")
+                    time.sleep(1)
+                    
+            except KeyboardInterrupt:
+                print("\n\n⚠️  Interrupted by user")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
+                print(f"❌ Unexpected error: {e}")
+                print("The system will continue running...")
+                time.sleep(2)
+    
+    def cleanup(self):
+        """ניקוי משאבים"""
+        try:
+            self._cleanup_processes()
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
 
 def main():
     """נקודת כניסה ראשית משופרת"""
