@@ -220,9 +220,6 @@ class AdvancedConfig:
             'priority_symbols': self.SYMBOL_CONFIG['priority_symbols']
         }
         
-        # ⭐ הוספה חדשה - Backward compatibility for hybrid settings ⭐
-        self.WEBSOCKET_MAX_SYMBOLS = self.HYBRID_CONFIG['websocket_max_symbols']
-        self.HTTP_UPDATE_INTERVAL = self.HYBRID_CONFIG['http_update_interval']
     
     def _load_symbol_list(self, env_var: str, default: List[str]) -> List[str]:
         """טעינת רשימת סמלים מ-environment"""

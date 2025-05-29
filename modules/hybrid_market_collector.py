@@ -504,21 +504,22 @@ class OptimizedHTTPClient:
 class HybridMarketCollector:
     """איוסף שוק היברידי - WebSocket + HTTP מואץ"""
     
-    def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
-        # קביעת סמלים
-        all_symbols = symbols or Config.DEFAULT_COINS
+def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
+        # עדכון לתמיכה בהגדרות החדשות
+        websocket_limit = Config.SYMBOL_CONFIG.get('websocket_symbols', 80)
+        all_symbols = symbols or Config.DEFAULT_COINS[:Config.SYMBOL_CONFIG.get('max_symbols', 600)]
         
-        # חלוקה בין WebSocket ו-HTTP
-        websocket_max = int(os.getenv('WEBSOCKET_MAX_SYMBOLS', '80'))
+        # הפרדה בין סמלים ל-WebSocket ו-HTTP
+        self.websocket_symbols = all_symbols[:websocket_limit]
+        self.http_only_symbols = all_symbols[websocket_limit:]
         
-        # 80 הסמלים הראשונים/חשובים לWebSocket
-        self.websocket_symbols = all_symbols[:websocket_max]
+        # Clients - WebSocket רק לסמלים הראשונים
+        self.ws_client = WebSocketClient(self.websocket_symbols)
+        self.http_client = OptimizedHTTPClient(api_key, api_secret)
         
-        # כל השאר לHTTP בלבד
-        self.http_only_symbols = all_symbols[websocket_max:] if len(all_symbols) > websocket_max else []
+        # שמירת כל הסמלים
+        self.symbols = all_symbols
         
-        # כל הסמלים
-        self.all_symbols = all_symbols
         
         logger.info(f"🚀 Hybrid Setup: {len(self.websocket_symbols)} WebSocket + {len(self.http_only_symbols)} HTTP-only symbols")
         
@@ -868,31 +869,57 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
             loop.close()
     
     def _http_worker(self):
-        """Thread worker ל-HTTP - מילוי פערים"""
-        http_interval = 60  # עדכון HTTP כל דקה
+        """Thread worker ל-HTTP - מילוי פערים ועדכון סמלים נוספים"""
+        http_interval = Config.DATA_COLLECTION.get('http_interval', 20)  # 2 דקות
         
         while self.is_running:
             try:
                 start_time = time.time()
                 
-                # בדיקת סמלים שלא התעדכנו מזמן דרך WebSocket
-                stale_symbols = self._find_stale_symbols()
+                # עדכון סמלים שלא ב-WebSocket
+                if self.http_only_symbols:
+                    logger.info(f"📊 HTTP update for {len(self.http_only_symbols)} additional symbols")
+                    self._update_http_only_symbols()
                 
+                # בדיקת סמלים ישנים מ-WebSocket
+                stale_symbols = self._find_stale_symbols()
                 if stale_symbols:
-                    logger.info(f"🔄 HTTP fallback for {len(stale_symbols)} symbols: {stale_symbols[:5]}...")
+                    logger.info(f"🔄 HTTP fallback for {len(stale_symbols)} stale symbols")
+                    self._update_stale_symbols(stale_symbols)
+                
+                # המתנה לסיבוב הבא
+                elapsed = time.time() - start_time
+                sleep_time = max(0, http_interval - elapsed)
+                
+                for _ in range(int(sleep_time)):
+                    if not self.is_running:
+                        break
+                    time.sleep(1)
                     
-                    # קבלת נתונים דרך HTTP עבור סמלים ישנים
-                    for symbol in stale_symbols:
-                        try:
-                            # כמה שניות delay בין symbols
-                            time.sleep(1)
-                            
-                            # כאן נוכל להוסיף קריאת HTTP specific לסמל
-                            # לעת עתה נסמן שהסמל נבדק
-                            logger.debug(f"Checked {symbol} via HTTP")
-                            
-                        except Exception as e:
-                            logger.error(f"Error getting HTTP data for {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"HTTP worker error: {e}")
+                time.sleep(30)
+
+    def _update_http_only_symbols(self):
+        """עדכון סמלים שרק ב-HTTP"""
+        batch_size = 10  # מספר סמלים לכל קריאת API
+        
+        for i in range(0, len(self.http_only_symbols), batch_size):
+            batch = self.http_only_symbols[i:i+batch_size]
+            
+            try:
+                # קריאת Ticker API עבור הבאץ'
+                pairs = [f"{symbol}USD" for symbol in batch]
+                ticker_resp = self.http_client.kraken_api.query_public('Ticker', {'pair': ','.join(pairs)})
+                
+                if ticker_resp.get('result'):
+                    self._process_http_ticker_data(ticker_resp['result'])
+                
+                # השהייה קטנה בין באצ'ים
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Error updating HTTP symbols batch: {e}")
                 
                 # המתנה לפני הסיבוב הבא
                 elapsed = time.time() - start_time
@@ -1143,11 +1170,15 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
 
 # Enhanced run function for the new collector
 def run_hybrid_collector(symbols: List[str] = None, api_key: str = None, api_secret: str = None):
-    """הפעלת איסוף היברידי"""
+    """הפעלת איסוף היברידי עם תמיכה בהגדרות החדשות"""
+    
+    # קבלת כל הסמלים לפי ההגדרות
+    max_symbols = Config.SYMBOL_CONFIG.get('max_symbols', 600)
+    all_symbols = symbols or Config.DEFAULT_COINS[:max_symbols]
     
     # Initialize collector
     collector = HybridMarketCollector(
-        symbols=symbols or Config.DEFAULT_COINS[:600],
+        symbols=all_symbols,  # עכשיו יכול לקבל עד 600 סמלים
         api_key=api_key or Config.get_api_key('KRAKEN_API_KEY'),
         api_secret=api_secret or Config.get_api_key('KRAKEN_API_SECRET')
     )

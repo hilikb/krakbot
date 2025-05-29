@@ -263,11 +263,18 @@ class EnhancedTradingBotManager:
         print("🌐 HTTP: Account data, history, fallback")
         
         # בחירת סמלים
-        max_symbols = 600  # מגבלה לביצועים
-        available_symbols = Config.DEFAULT_COINS[:max_symbols]
+        websocket_max = Config.HYBRID_CONFIG['websocket_max_symbols']  # 80
+        max_symbols = Config.SYMBOL_CONFIG['max_symbols']  # 600
         
-        print(f"\n📊 Tracking {len(available_symbols)} symbols:")
-        print(f"   {', '.join(available_symbols[:10])}{'...' if len(available_symbols) > 10 else ''}")
+        # קבלת כל הסמלים
+        all_symbols = Config.DEFAULT_COINS[:max_symbols]
+        ws_symbols = all_symbols[:websocket_max]
+        http_symbols = all_symbols[websocket_max:]
+        
+        print(f"\n📊 Total symbols to track: {len(all_symbols)}")
+        print(f"   ⚡ WebSocket (Real-time): {len(ws_symbols)} symbols")
+        print(f"   📡 HTTP (Every 2 min): {len(http_symbols)} symbols")
+        print(f"   WebSocket symbols: {', '.join(ws_symbols[:10])}{'...' if len(ws_symbols) > 10 else ''}")
         
         # התחלת collector
         try:
@@ -286,9 +293,9 @@ class EnhancedTradingBotManager:
                           f"${price_update.price:,.2f} ({price_update.change_24h_pct:+.2f}%) "
                           f"[{price_update.source}]")
             
-            # יצירת ה-collector
+            # יצירת ה-collector עם כל הסמלים
             self.hybrid_collector = HybridMarketCollector(
-                symbols=available_symbols,
+                symbols=all_symbols,  # שולחים את כל הסמלים
                 api_key=Config.get_api_key('KRAKEN_API_KEY'),
                 api_secret=Config.get_api_key('KRAKEN_API_SECRET')
             )
@@ -301,8 +308,8 @@ class EnhancedTradingBotManager:
             
             print("✅ Hybrid collector started successfully!")
             print("\n📊 Collection Status:")
-            print("  • WebSocket: Connecting to Kraken...")
-            print("  • HTTP: Ready for fallback and account data")
+            print(f"  • WebSocket: Connecting to Kraken for {len(ws_symbols)} symbols...")
+            print(f"  • HTTP: Will update {len(http_symbols)} symbols every {Config.HYBRID_CONFIG['http_update_interval']}s")
             print("  • Database: Storing all updates")
             print("  • CSV Files: Updated for compatibility")
             
@@ -321,7 +328,7 @@ class EnhancedTradingBotManager:
                 print(f"  • HTTP Updates: {stats['http_updates']}")
                 print(f"  • Updates/Min: {stats.get('updates_per_minute', 0):.1f}")
                 print(f"  • WebSocket Status: {stats['websocket_status']}")
-                print(f"  • Active Symbols: {stats['active_symbols']}/{len(available_symbols)}")
+                print(f"  • Active Symbols: {stats['active_symbols']}/{len(all_symbols)}")
                 
         except KeyboardInterrupt:
             print("\n⏹️  Stopping hybrid collection...")
@@ -332,7 +339,6 @@ class EnhancedTradingBotManager:
             if self.hybrid_collector:
                 self.hybrid_collector.stop()
                 print("✅ Hybrid collector stopped")
-    
     def run_data_collection(self):
         """הפעלת איסוף נתונים קלאסי (HTTP בלבד)"""
         print("\n📊 Starting Classic Data Collection System (HTTP)...")
