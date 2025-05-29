@@ -20,12 +20,12 @@ def test_connection():
     # בדיקת API keys
     print("\n1️⃣ Checking API Keys:")
     if Config.KRAKEN_API_KEY:
-        print(f"   ✅ API Key: ...{Config.KRAKEN_API_KEY[-8:]}")
+        print(f"   ✅ API Key: ...{Config.get_api_key('KRAKEN_API_KEY'[-8:]}")
     else:
         print("   ❌ API Key: Missing")
         
     if Config.KRAKEN_API_SECRET:
-        print(f"   ✅ API Secret: ...{Config.KRAKEN_API_SECRET[-8:]}")
+        print(f"   ✅ API Secret: ...{Config.get_api_key('KRAKEN_API_SECRET'[-8:]}")
     else:
         print("   ❌ API Secret: Missing")
     
@@ -34,7 +34,7 @@ def test_connection():
         return False
     
     # יצירת API object
-    api = krakenex.API(Config.KRAKEN_API_KEY, Config.KRAKEN_API_SECRET)
+    api = krakenex.API(Config.get_api_key('KRAKEN_API_KEY'), Config.get_api_key('KRAKEN_API_SECRET'))
     
     # בדיקת שעון מערכת
     print("\n2️⃣ Testing Public API (Server Time):")
