@@ -97,17 +97,27 @@ class DataQualityManager:
         
         return is_valid, quality_score, issues
 
-class EnhancedMarketCollector:
-    """איסוף נתוני שוק משופר עם בקרת איכות"""
+class MarketCollector:
+    """מאסף נתוני שוק פשוט - תואם לבקרה"""
     
     def __init__(self, use_kraken: bool = True, use_binance: bool = True):
-        self.use_kraken = use_kraken and Config.KRAKEN_API_KEY
+        self.use_kraken = use_kraken
         self.use_binance = use_binance
         
         # Initialize APIs
         self.kraken_api = None
         if self.use_kraken:
-            self.kraken_api = krakenex.API(Config.KRAKEN_API_KEY, Config.KRAKEN_API_SECRET)
+            kraken_key = Config.get_api_key('KRAKEN_API_KEY') if hasattr(Config, 'get_api_key') else getattr(Config, 'KRAKEN_API_KEY', '')
+            kraken_secret = Config.get_api_key('KRAKEN_API_SECRET') if hasattr(Config, 'get_api_key') else getattr(Config, 'KRAKEN_API_SECRET', '')
+            
+            if kraken_key and kraken_secret:
+                try:
+                    self.kraken_api = krakenex.API(kraken_key, kraken_secret)
+                    logger.info("Kraken API initialized successfully")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Kraken API: {e}")
+            else:
+                logger.warning("No Kraken API credentials available")
         
         # Data quality manager
         self.quality_manager = DataQualityManager()
@@ -135,6 +145,15 @@ class EnhancedMarketCollector:
         self.min_interval_seconds = {
             'kraken': 1,    # 1 second between calls
             'binance': 0.5  # 0.5 seconds between calls
+        }
+        
+        # Symbol mapping for Kraken
+        self.symbol_mapping = {
+            'XXBTZUSD': 'BTC', 'XBTUSD': 'BTC', 'BTCUSD': 'BTC',
+            'XETHZUSD': 'ETH', 'ETHUSD': 'ETH',
+            'SOLUSD': 'SOL', 'ADAUSD': 'ADA', 'DOTUSD': 'DOT',
+            'MATICUSD': 'MATIC', 'LINKUSD': 'LINK', 'AVAXUSD': 'AVAX',
+            'XRPUSD': 'XRP', 'ATOMUSD': 'ATOM'
         }
     
     def _init_database(self):
@@ -187,6 +206,95 @@ class EnhancedMarketCollector:
                 time.sleep(sleep_time)
         
         self.last_api_call[source] = time.time()
+    
+    def get_combined_prices(self, symbols: List[str]) -> Dict[str, Dict]:
+        """קבלת מחירים מכל המקורות - פונקציה נדרשת לmain.py"""
+        try:
+            if not self.kraken_api:
+                logger.warning("No Kraken API available")
+                return {}
+            
+            self._respect_rate_limit('kraken')
+            
+            # Get ticker data from Kraken
+            ticker_resp = self.kraken_api.query_public('Ticker')
+            
+            if ticker_resp.get('error'):
+                logger.error(f"Kraken API error: {ticker_resp['error']}")
+                return {}
+            
+            results = {}
+            ticker_data = ticker_resp.get('result', {})
+            
+            for pair, data in ticker_data.items():
+                if 'USD' not in pair:
+                    continue
+                
+                symbol = self._normalize_kraken_symbol(pair)
+                
+                if symbol not in symbols:
+                    continue
+                
+                try:
+                    current_price = self._safe_float(data.get('c', [0])[0])
+                    if current_price <= 0:
+                        continue
+                    
+                    open_price = self._safe_float(data.get('o', current_price))
+                    
+                    # Calculate change
+                    if open_price > 0:
+                        change_pct = ((current_price - open_price) / open_price) * 100
+                    else:
+                        change_pct = 0
+                    
+                    results[symbol] = {
+                        'price': current_price,
+                        'change_pct_24h': change_pct,
+                        'volume': self._safe_float(data.get('v', [0, 0])[1]),
+                        'high_24h': self._safe_float(data.get('h', [0, current_price])[1]),
+                        'low_24h': self._safe_float(data.get('l', [0, current_price])[1]),
+                        'bid': self._safe_float(data.get('b', [current_price])[0]),
+                        'ask': self._safe_float(data.get('a', [current_price])[0])
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"Error parsing data for {pair}: {e}")
+                    continue
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting combined prices: {e}")
+            return {}
+    
+    def get_all_available_symbols(self) -> List[str]:
+        """קבלת כל הסמלים הזמינים - פונקציה נדרשת לmain.py"""
+        try:
+            if not self.kraken_api:
+                return Config.DEFAULT_COINS if hasattr(Config, 'DEFAULT_COINS') else []
+            
+            # Get asset pairs from Kraken
+            pairs_resp = self.kraken_api.query_public('AssetPairs')
+            
+            if pairs_resp.get('error'):
+                logger.error(f"Kraken API error: {pairs_resp['error']}")
+                return Config.DEFAULT_COINS if hasattr(Config, 'DEFAULT_COINS') else []
+            
+            symbols = []
+            pairs_data = pairs_resp.get('result', {})
+            
+            for pair, info in pairs_data.items():
+                if 'USD' in pair and info.get('status') == 'online':
+                    symbol = self._normalize_kraken_symbol(pair)
+                    if symbol not in symbols:
+                        symbols.append(symbol)
+            
+            return sorted(symbols)
+            
+        except Exception as e:
+            logger.error(f"Error getting available symbols: {e}")
+            return Config.DEFAULT_COINS if hasattr(Config, 'DEFAULT_COINS') else []
     
     @lru_cache(maxsize=100)
     def _get_symbol_mapping(self, symbol: str) -> str:
@@ -414,6 +522,10 @@ class EnhancedMarketCollector:
         
         return df
     
+    def _get_binance_data_enhanced(self, symbols: Optional[List[str]] = None) -> Dict[str, MarketDataPoint]:
+        """Placeholder for Binance data - can be implemented later"""
+        return {}
+    
     def _store_in_database(self, data_points: List[MarketDataPoint]):
         """שמירה בבסיס נתונים"""
         try:
@@ -613,10 +725,100 @@ class EnhancedMarketCollector:
         return replacements.get(cleaned, cleaned)
 
 
+# Enhanced version as alias for backward compatibility
+EnhancedMarketCollector = MarketCollector
+
+# פונקציות נדרשות ל-main.py
+def run_collector(interval: int = 30):
+    """פונקציה פשוטה להפעלת איסוף נתונים"""
+    collector = MarketCollector()
+    
+    logger.info(f"Market collector started - interval: {interval}s")
+    
+    error_count = 0
+    max_errors = 5
+    
+    while True:
+        try:
+            start_time = time.time()
+            
+            # Get symbols to collect
+            symbols = Config.DEFAULT_COINS[:20] if hasattr(Config, 'DEFAULT_COINS') else ['BTC', 'ETH', 'SOL']
+            
+            # Collect data
+            df = collector.collect_and_store_enhanced(symbols)
+            
+            if not df.empty:
+                logger.info(f"Collected data for {len(df)} symbols")
+                error_count = 0  # Reset error count on success
+            else:
+                logger.warning("No data collected in this cycle")
+            
+            # Dynamic sleep based on performance
+            elapsed = time.time() - start_time
+            sleep_time = max(0, interval - elapsed)
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                
+        except KeyboardInterrupt:
+            logger.info("Market collector stopped by user")
+            break
+            
+        except Exception as e:
+            error_count += 1
+            logger.error(f"Collection error ({error_count}/{max_errors}): {e}")
+            
+            if error_count >= max_errors:
+                logger.critical("Too many errors, stopping collector")
+                break
+            
+            time.sleep(interval * 2)  # Wait longer after error
+    
+    logger.info("Market collector shutdown complete")
+
+def test_collector():
+    """פונקציית בדיקה לאיסוף נתונים"""
+    print("\n📊 Testing Market Collector")
+    print("="*50)
+    
+    collector = MarketCollector()
+    
+    print("\n🔍 Testing basic functionality...")
+    
+    # Test symbol availability
+    symbols = collector.get_all_available_symbols()
+    print(f"✅ Available symbols: {len(symbols)}")
+    print(f"   Examples: {', '.join(symbols[:10])}")
+    
+    # Test price collection
+    test_symbols = ['BTC', 'ETH', 'SOL']
+    prices = collector.get_combined_prices(test_symbols)
+    
+    if prices:
+        print(f"\n✅ Price collection successful: {len(prices)} symbols")
+        for symbol, data in prices.items():
+            print(f"   {symbol}: ${data['price']:,.2f} ({data['change_pct_24h']:+.2f}%)")
+    else:
+        print("\n❌ Price collection failed")
+    
+    # Test data collection
+    print("\n🔄 Testing full data collection...")
+    df = collector.collect_and_store_enhanced(['BTC', 'ETH'])
+    
+    if not df.empty:
+        print(f"✅ Full collection successful: {len(df)} data points")
+        print(f"   Columns: {', '.join(df.columns)}")
+    else:
+        print("❌ Full collection failed")
+    
+    print("\n" + "="*50)
+    print("✅ Market collector test completed")
+
 # Main collection runner with enhanced features
 def run_enhanced_collector(interval: int = 30, max_symbols: int = 50):
     """הפעלת איסוף משופר"""
-    collector = EnhancedMarketCollector()
+    collector = MarketCollector()
     
     logger.info(f"Enhanced market collector started - interval: {interval}s")
     
@@ -628,7 +830,7 @@ def run_enhanced_collector(interval: int = 30, max_symbols: int = 50):
             start_time = time.time()
             
             # Get available symbols (limited for performance)
-            symbols = Config.DEFAULT_COINS[:max_symbols]
+            symbols = Config.DEFAULT_COINS[:max_symbols] if hasattr(Config, 'DEFAULT_COINS') else ['BTC', 'ETH', 'SOL']
             
             # Collect data
             df = collector.collect_and_store_enhanced(symbols)
@@ -676,4 +878,5 @@ def run_enhanced_collector(interval: int = 30, max_symbols: int = 50):
 
 
 if __name__ == "__main__":
-    run_enhanced_collector(interval=30, max_symbols=30)
+    # הפעלת בדיקה אם מופעל ישירות
+    test_collector()
