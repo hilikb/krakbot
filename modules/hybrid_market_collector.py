@@ -504,22 +504,15 @@ class OptimizedHTTPClient:
 class HybridMarketCollector:
     """איוסף שוק היברידי - WebSocket + HTTP מואץ"""
     
-def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
+    def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
         # עדכון לתמיכה בהגדרות החדשות
-        websocket_limit = Config.SYMBOL_CONFIG.get('websocket_symbols', 80)
+        websocket_limit = Config.HYBRID_CONFIG.get('websocket_max_symbols', 80)
         all_symbols = symbols or Config.DEFAULT_COINS[:Config.SYMBOL_CONFIG.get('max_symbols', 600)]
         
         # הפרדה בין סמלים ל-WebSocket ו-HTTP
         self.websocket_symbols = all_symbols[:websocket_limit]
         self.http_only_symbols = all_symbols[websocket_limit:]
-        
-        # Clients - WebSocket רק לסמלים הראשונים
-        self.ws_client = WebSocketClient(self.websocket_symbols)
-        self.http_client = OptimizedHTTPClient(api_key, api_secret)
-        
-        # שמירת כל הסמלים
-        self.symbols = all_symbols
-        
+        self.all_symbols = all_symbols
         
         logger.info(f"🚀 Hybrid Setup: {len(self.websocket_symbols)} WebSocket + {len(self.http_only_symbols)} HTTP-only symbols")
         
@@ -681,125 +674,6 @@ def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: s
         
         return symbol
     
-    def _http_all_symbols_worker(self):
-    """Thread worker לעדכון כל הסמלים שלא בWebSocket"""
-    http_interval = int(os.getenv('HTTP_UPDATE_INTERVAL', '120'))  # 2 דקות ברירת מחדל
-    
-    while self.is_running:
-        try:
-            start_time = time.time()
-            
-            if self.http_only_symbols:
-                logger.info(f"📊 Updating {len(self.http_only_symbols)} HTTP-only symbols...")
-                
-                # חלוקה לbatches כדי לא להעמיס
-                batch_size = 20
-                for i in range(0, len(self.http_only_symbols), batch_size):
-                    if not self.is_running:
-                        break
-                        
-                    batch = self.http_only_symbols[i:i+batch_size]
-                    
-                    # קריאת Ticker עבור ה-batch
-                    try:
-                        self._fetch_http_batch_prices(batch)
-                        time.sleep(2)  # המתנה בין batches
-                    except Exception as e:
-                        logger.error(f"Error fetching batch {i//batch_size}: {e}")
-            
-            # המתנה לפני הסיבוב הבא
-            elapsed = time.time() - start_time
-            sleep_time = max(0, http_interval - elapsed)
-            
-            logger.info(f"✅ HTTP update completed in {elapsed:.1f}s, next in {sleep_time:.0f}s")
-            
-            for _ in range(int(sleep_time)):
-                if not self.is_running:
-                    break
-                time.sleep(1)
-                
-        except Exception as e:
-            logger.error(f"HTTP all symbols worker error: {e}")
-            time.sleep(60)
-
-def _fetch_http_batch_prices(self, symbols: List[str]):
-    """שליפת מחירים עבור batch של סמלים"""
-    try:
-        # בניית pairs string לKraken
-        pairs = ','.join([f"{symbol}USD" for symbol in symbols])
-        
-        # קריאה לAPI
-        self.http_client._respect_rate_limits('public')
-        url = "https://api.kraken.com/0/public/Ticker"
-        response = self.http_client.session.get(url, params={'pair': pairs}, timeout=15)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        if data.get('error'):
-            logger.error(f"Ticker error: {data['error']}")
-            return
-        
-        # עיבוד תוצאות
-        for pair, ticker_data in data.get('result', {}).items():
-            symbol = self._normalize_pair_to_symbol(pair)
-            
-            if symbol in self.http_only_symbols:
-                try:
-                    current_price = float(ticker_data.get('c', [0])[0])
-                    if current_price <= 0:
-                        continue
-                    
-                    # חישוב שינוי
-                    open_price = float(ticker_data.get('o', current_price))
-                    change_24h_pct = ((current_price - open_price) / open_price * 100) if open_price > 0 else 0
-                    
-                    price_update = RealTimePriceUpdate(
-                        symbol=symbol,
-                        price=current_price,
-                        timestamp=datetime.now(),
-                        volume=float(ticker_data.get('v', [0, 0])[1]),
-                        bid=float(ticker_data.get('b', [current_price])[0]),
-                        ask=float(ticker_data.get('a', [current_price])[0]),
-                        high_24h=float(ticker_data.get('h', [current_price, current_price])[1]),
-                        low_24h=float(ticker_data.get('l', [current_price, current_price])[1]),
-                        change_24h_pct=change_24h_pct,
-                        source='http',
-                        quality_score=0.9  # מעט נמוך יותר מWebSocket
-                    )
-                    
-                    # הוספה לqueue
-                    self.data_queue.put(('http', price_update))
-                    self.stats['http_only_updates'] += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error processing {pair}: {e}")
-                    
-    except Exception as e:
-        logger.error(f"Batch fetch error: {e}")
-
-def _normalize_pair_to_symbol(self, pair: str) -> str:
-    """נרמול pair לסמל"""
-    # הסרת USD וניקוי
-    symbol = pair.replace('USD', '').replace('ZUSD', '')
-    
-    # מיפויים מיוחדים של Kraken
-    mappings = {
-        'XXBT': 'BTC', 'XBT': 'BTC',
-        'XETH': 'ETH', 'XXRP': 'XRP',
-        'XLTC': 'LTC', 'XXLM': 'XLM',
-        'XZEC': 'ZEC', 'XXMR': 'XMR'
-    }
-    
-    for old, new in mappings.items():
-        if symbol.startswith(old):
-            return new
-    
-    # הסרת X/Z prefix
-    if symbol.startswith('X') and len(symbol) > 3:
-        symbol = symbol[1:]
-    
-    return symbol
     def _init_database(self):
         """אתחול בסיס נתונים"""
         try:
@@ -870,7 +744,7 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
     
     def _http_worker(self):
         """Thread worker ל-HTTP - מילוי פערים ועדכון סמלים נוספים"""
-        http_interval = Config.DATA_COLLECTION.get('http_interval', 20)  # 2 דקות
+        http_interval = Config.HYBRID_CONFIG.get('http_update_interval', 120)  # 2 דקות
         
         while self.is_running:
             try:
@@ -920,19 +794,11 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
                 
             except Exception as e:
                 logger.error(f"Error updating HTTP symbols batch: {e}")
-                
-                # המתנה לפני הסיבוב הבא
-                elapsed = time.time() - start_time
-                sleep_time = max(0, http_interval - elapsed)
-                
-                for _ in range(int(sleep_time)):
-                    if not self.is_running:
-                        break
-                    time.sleep(1)
-                
-            except Exception as e:
-                logger.error(f"HTTP worker error: {e}")
-                time.sleep(30)
+    
+    def _update_stale_symbols(self, symbols: List[str]):
+        """עדכון סמלים ישנים"""
+        # Similar implementation to _update_http_only_symbols
+        pass
     
     def _find_stale_symbols(self, max_age_seconds: int = 120) -> List[str]:
         """מציאת סמלים שלא התעדכנו מזמן"""
@@ -941,7 +807,7 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
         
         ws_prices = self.ws_client.get_latest_prices()
         
-        for symbol in self.symbols:
+        for symbol in self.websocket_symbols:
             if symbol not in ws_prices:
                 stale_symbols.append(symbol)
             else:
@@ -963,7 +829,7 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
                     continue
                 
                 # עיבוד נתונים
-                if source == 'websocket' and isinstance(data, RealTimePriceUpdate):
+                if isinstance(data, RealTimePriceUpdate):
                     self._process_price_update(data)
                 
                 # סימון שהמשימה הושלמה
@@ -1102,14 +968,17 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
             loop.close()
         
         # המתנה לסיום threads
-        if self.ws_thread and self.ws_thread.is_alive():
-            self.ws_thread.join(timeout=5)
+        threads_to_stop = [
+            (self.ws_thread, "WebSocket"),
+            (self.http_thread, "HTTP Fallback"),
+            (self.http_all_symbols_thread, "HTTP All Symbols"),
+            (self.processing_thread, "Processing")
+        ]
         
-        if self.http_thread and self.http_thread.is_alive():
-            self.http_thread.join(timeout=5)
-        
-        if self.processing_thread and self.processing_thread.is_alive():
-            self.processing_thread.join(timeout=5)
+        for thread, name in threads_to_stop:
+            if thread and thread.is_alive():
+                logger.info(f"Stopping {name} thread...")
+                thread.join(timeout=5)
         
         # ניקוי HTTP client
         self.http_client.cleanup()
@@ -1133,6 +1002,7 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
         stats['active_websocket_symbols'] = len([s for s in self.websocket_symbols if s in self.latest_data])
         stats['active_http_symbols'] = len([s for s in self.http_only_symbols if s in self.latest_data])
         stats['total_active_symbols'] = len(self.latest_data)
+        stats['active_symbols'] = stats['total_active_symbols']  # תאימות אחורה
         
         # חישוב אחוז כיסוי
         stats['coverage_percentage'] = (len(self.latest_data) / len(self.all_symbols) * 100) if self.all_symbols else 0
@@ -1166,7 +1036,7 @@ def _normalize_pair_to_symbol(self, pair: str) -> str:
     
     def get_all_available_symbols(self) -> List[str]:
         """תאימות אחורה"""
-        return self.symbols.copy()
+        return self.all_symbols.copy()
 
 # Enhanced run function for the new collector
 def run_hybrid_collector(symbols: List[str] = None, api_key: str = None, api_secret: str = None):
@@ -1190,7 +1060,6 @@ def run_hybrid_collector(symbols: List[str] = None, api_key: str = None, api_sec
             logger.info(f"💰 [{collector.stats['total_updates']}] {price_update.symbol}: "
                        f"${price_update.price:,.2f} ({price_update.change_24h_pct:+.2f}%)")
     
-
     collector.add_data_callback(on_price_update)
     
     try:
