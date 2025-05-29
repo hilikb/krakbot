@@ -38,6 +38,13 @@ try:
     from modules.portfolio_optimizer import PortfolioOptimizer
 except ImportError:
     PortfolioOptimizer = None
+    
+# בדיקת זמינות WebSocket
+try:
+    from modules.market_collector import HybridMarketCollector, RealTimePriceUpdate
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False    
 
 # הגדרות עמוד משופרות
 st.set_page_config(
@@ -295,7 +302,39 @@ class AdvancedTradingDashboard:
             st.session_state.simulation_running = False
         if 'ai_mode' not in st.session_state:
             st.session_state.ai_mode = 'conservative'
-    
+            
+        # WebSocket support
+        self.use_websocket = WEBSOCKET_AVAILABLE
+        self.hybrid_collector = None  
+
+        # Initialize WebSocket if available
+        if self.use_websocket and 'ws_collector' not in st.session_state:
+        self._init_websocket_collector()
+
+    # הוספת מתודה חדשה:
+    def _init_websocket_collector(self):
+        """Initialize WebSocket collector for real-time data"""
+        try:
+            symbols = Config.DEFAULT_COINS[:15]  # Limit for performance
+        
+            self.hybrid_collector = HybridMarketCollector(
+                symbols=symbols,
+                api_key=Config.get_api_key('KRAKEN_API_KEY'),
+                api_secret=Config.get_api_key('KRAKEN_API_SECRET')
+            )
+        
+            # Start in background thread
+            import threading
+            thread = threading.Thread(target=self.hybrid_collector.start, daemon=True)
+            thread.start()
+        
+            st.session_state.ws_collector = self.hybrid_collector
+            st.session_state.ws_active = True
+        
+        except Exception as e:
+            st.error(f"Failed to initialize WebSocket: {e}")
+            self.use_websocket = False
+        
     def get_portfolio_with_stablecoins(self):
         """שליפת פורטפוליו כולל USDT/USDC"""
         if not self.api:
@@ -472,10 +511,21 @@ class AdvancedTradingDashboard:
         }
         return names.get(symbol, symbol)
     
+    # עדכון display_header להוספת אינדיקטור WebSocket:
     def display_header(self):
-        """הצגת כותרת מקצועית"""
-        st.markdown("""
-        <div class="main-header">
+        """הצגת כותרת מקצועית עם WebSocket indicator"""
+        ws_status = ""
+        if self.use_websocket and st.session_state.get('ws_active'):
+            ws_status = """
+            <div class="live-indicator" style="position: absolute; top: 1rem; right: 1rem;">
+                <div class="live-dot"></div>
+                <span>WebSocket LIVE</span>
+            </div>
+            """
+    
+        st.markdown(f"""
+        <div class="main-header" style="position: relative;">
+            {ws_status}
             <h1 style="margin: 0; font-size: 2.5rem; font-weight: 800;">
                 💎 Kraken AI Trading System
             </h1>
@@ -484,7 +534,7 @@ class AdvancedTradingDashboard:
             </p>
             <div class="live-indicator" style="margin-top: 1rem;">
                 <div class="live-dot"></div>
-                <span>LIVE TRADING</span>
+                <span>{'HYBRID MODE' if self.use_websocket else 'HTTP MODE'}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
