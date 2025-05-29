@@ -263,7 +263,7 @@ class EnhancedTradingBotManager:
         print("🌐 HTTP: Account data, history, fallback")
         
         # בחירת סמלים
-        max_symbols = 20  # מגבלה לביצועים
+        max_symbols = 600  # מגבלה לביצועים
         available_symbols = Config.DEFAULT_COINS[:max_symbols]
         
         print(f"\n📊 Tracking {len(available_symbols)} symbols:")
@@ -490,7 +490,7 @@ class EnhancedTradingBotManager:
     def _run_hybrid_data_background(self):
         """איסוף נתונים היברידי ברקע"""
         try:
-            symbols = Config.DEFAULT_COINS[:15]  # מגבלה לביצועים
+            symbols = Config.DEFAULT_COINS[:600]  # מגבלה לביצועים
             
             self.hybrid_collector = HybridMarketCollector(
                 symbols=symbols,

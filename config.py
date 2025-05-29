@@ -181,6 +181,19 @@ class AdvancedConfig:
             'symbol_rotation_enabled': os.getenv('SYMBOL_ROTATION', 'true').lower() == 'true'
         }
         
+        # ⭐ הוספה חדשה - Hybrid Mode Settings ⭐
+        self.HYBRID_CONFIG = {
+            'websocket_max_symbols': int(os.getenv('WEBSOCKET_MAX_SYMBOLS', '80')),
+            'http_update_interval': int(os.getenv('HTTP_UPDATE_INTERVAL', '120')),
+            'websocket_priority_symbols': self._load_symbol_list('WEBSOCKET_PRIORITY_SYMBOLS', 
+                ['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'ADA', 'DOT', 'MATIC', 'LINK', 'AVAX']),
+            'enable_http_fallback': os.getenv('ENABLE_HTTP_FALLBACK', 'true').lower() == 'true',
+            'enable_parallel_http': os.getenv('ENABLE_PARALLEL_HTTP', 'true').lower() == 'true',
+            'websocket_reconnect_attempts': int(os.getenv('WEBSOCKET_RECONNECT_ATTEMPTS', '5')),
+            'http_batch_size': int(os.getenv('HTTP_BATCH_SIZE', '20')),
+            'stale_data_threshold': int(os.getenv('STALE_DATA_THRESHOLD', '120'))  # seconds
+        }
+        
         # Data collection settings
         self.DATA_COLLECTION = {
             'market_update_interval': int(os.getenv('MARKET_UPDATE_INTERVAL', '30')),
@@ -206,6 +219,10 @@ class AdvancedConfig:
             'max_symbols': self.SYMBOL_CONFIG['max_symbols'],
             'priority_symbols': self.SYMBOL_CONFIG['priority_symbols']
         }
+        
+        # ⭐ הוספה חדשה - Backward compatibility for hybrid settings ⭐
+        self.WEBSOCKET_MAX_SYMBOLS = self.HYBRID_CONFIG['websocket_max_symbols']
+        self.HTTP_UPDATE_INTERVAL = self.HYBRID_CONFIG['http_update_interval']
     
     def _load_symbol_list(self, env_var: str, default: List[str]) -> List[str]:
         """טעינת רשימת סמלים מ-environment"""
@@ -303,7 +320,22 @@ class AdvancedConfig:
     @property
     def BACKUP_DIR(self) -> Path:
         return self.DATA_DIR / 'backups'
-    
+        
+    @property
+    def WEBSOCKET_MAX_SYMBOLS(self) -> int:
+        """מספר מקסימלי של סמלים לWebSocket"""
+        return self.HYBRID_CONFIG['websocket_max_symbols']
+
+    @property
+    def HTTP_UPDATE_INTERVAL(self) -> int:
+        """אינטרוול עדכון HTTP בשניות"""
+        return self.HYBRID_CONFIG['http_update_interval']
+
+    @property
+    def WEBSOCKET_PRIORITY_SYMBOLS(self) -> List[str]:
+        """סמלים בעדיפות גבוהה לWebSocket"""
+        return self.HYBRID_CONFIG['websocket_priority_symbols']    
+        
     # Logging Setup
     def setup_logging(self, module_name: str) -> logging.Logger:
         """הגדרת לוגר למודול ספציפי עם הגדרות מתקדמות"""
@@ -394,7 +426,13 @@ class AdvancedConfig:
                 'position_size_limit': self.TRADING_PARAMS['risk_management']['max_position_size_pct']
             },
             'symbols_count': len(self.SYMBOL_CONFIG['default_symbols']),
-            'data_collection_interval': self.DATA_COLLECTION['market_update_interval']
+            'data_collection_interval': self.DATA_COLLECTION['market_update_interval'],
+            # ⭐ הוסף את אלה ⭐
+            'hybrid_mode': {
+                'websocket_symbols': self.WEBSOCKET_MAX_SYMBOLS,
+                'http_interval': self.HTTP_UPDATE_INTERVAL,
+                'total_symbols': self.SYMBOL_CONFIG['max_symbols']
+            }
         }
     
     def update_config_value(self, section: str, key: str, value: Any) -> bool:
@@ -531,6 +569,21 @@ MARKET_UPDATE_INTERVAL=30
 NEWS_UPDATE_INTERVAL=300
 HISTORY_CLEANUP_DAYS=30
 DATA_QUALITY_MIN_SCORE=0.7
+
+# Symbols Configuration
+DEFAULT_SYMBOLS=BTC,ETH,SOL,ADA,DOT,MATIC,LINK,AVAX,XRP,ATOM
+PRIORITY_SYMBOLS=BTC,ETH,SOL
+EXCLUDED_SYMBOLS=LUNA,UST,FTT
+MAX_SYMBOLS=50
+
+# ⭐ הוסף את אלה ⭐
+# Hybrid Mode Configuration
+WEBSOCKET_MAX_SYMBOLS=80
+WEBSOCKET_PRIORITY_SYMBOLS=BTC,ETH,SOL,USDT,USDC,ADA,DOT,MATIC,LINK,AVAX
+HTTP_UPDATE_INTERVAL=120
+ENABLE_HTTP_FALLBACK=true
+ENABLE_PARALLEL_HTTP=true
+USE_ALL_SYMBOLS=false
 
 # Logging
 LOG_LEVEL=INFO

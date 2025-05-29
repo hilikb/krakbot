@@ -505,10 +505,25 @@ class HybridMarketCollector:
     """איוסף שוק היברידי - WebSocket + HTTP מואץ"""
     
     def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
-        self.symbols = symbols or Config.DEFAULT_COINS[:20]  # מגבלה לביצועים
+        # קביעת סמלים
+        all_symbols = symbols or Config.DEFAULT_COINS
+        
+        # חלוקה בין WebSocket ו-HTTP
+        websocket_max = int(os.getenv('WEBSOCKET_MAX_SYMBOLS', '80'))
+        
+        # 80 הסמלים הראשונים/חשובים לWebSocket
+        self.websocket_symbols = all_symbols[:websocket_max]
+        
+        # כל השאר לHTTP בלבד
+        self.http_only_symbols = all_symbols[websocket_max:] if len(all_symbols) > websocket_max else []
+        
+        # כל הסמלים
+        self.all_symbols = all_symbols
+        
+        logger.info(f"🚀 Hybrid Setup: {len(self.websocket_symbols)} WebSocket + {len(self.http_only_symbols)} HTTP-only symbols")
         
         # Clients
-        self.ws_client = WebSocketClient(self.symbols)
+        self.ws_client = WebSocketClient(self.websocket_symbols)  # רק 80 סמלים
         self.http_client = OptimizedHTTPClient(api_key, api_secret)
         
         # State
@@ -519,6 +534,7 @@ class HybridMarketCollector:
         # Threading
         self.ws_thread = None
         self.http_thread = None
+        self.http_all_symbols_thread = None  # Thread חדש לכל הסמלים
         self.processing_thread = None
         
         # Database
@@ -532,7 +548,10 @@ class HybridMarketCollector:
         self.stats = {
             'websocket_updates': 0,
             'http_updates': 0,
+            'http_only_updates': 0,
             'total_updates': 0,
+            'websocket_symbols_count': len(self.websocket_symbols),
+            'http_only_symbols_count': len(self.http_only_symbols),
             'start_time': None,
             'last_update': None
         }
@@ -541,6 +560,245 @@ class HybridMarketCollector:
         self.ws_client.add_price_callback(self._on_websocket_update)
         self.ws_client.add_connection_callback(self._on_connection_change)
     
+    def _http_all_symbols_worker(self):
+        """Thread worker לעדכון כל הסמלים שלא בWebSocket"""
+        http_interval = int(os.getenv('HTTP_UPDATE_INTERVAL', '120'))  # 2 דקות ברירת מחדל
+        
+        while self.is_running:
+            try:
+                start_time = time.time()
+                
+                if self.http_only_symbols:
+                    logger.info(f"📊 Updating {len(self.http_only_symbols)} HTTP-only symbols...")
+                    
+                    # חלוקה לbatches כדי לא להעמיס
+                    batch_size = 20
+                    for i in range(0, len(self.http_only_symbols), batch_size):
+                        if not self.is_running:
+                            break
+                            
+                        batch = self.http_only_symbols[i:i+batch_size]
+                        
+                        # קריאת Ticker עבור ה-batch
+                        try:
+                            self._fetch_http_batch_prices(batch)
+                            time.sleep(2)  # המתנה בין batches
+                        except Exception as e:
+                            logger.error(f"Error fetching batch {i//batch_size}: {e}")
+                
+                # המתנה לפני הסיבוב הבא
+                elapsed = time.time() - start_time
+                sleep_time = max(0, http_interval - elapsed)
+                
+                logger.info(f"✅ HTTP update completed in {elapsed:.1f}s, next in {sleep_time:.0f}s")
+                
+                for _ in range(int(sleep_time)):
+                    if not self.is_running:
+                        break
+                    time.sleep(1)
+                    
+            except Exception as e:
+                logger.error(f"HTTP all symbols worker error: {e}")
+                time.sleep(60)
+
+    def _fetch_http_batch_prices(self, symbols: List[str]):
+        """שליפת מחירים עבור batch של סמלים"""
+        try:
+            # בניית pairs string לKraken
+            pairs = ','.join([f"{symbol}USD" for symbol in symbols])
+            
+            # קריאה לAPI
+            self.http_client._respect_rate_limits('public')
+            url = "https://api.kraken.com/0/public/Ticker"
+            response = self.http_client.session.get(url, params={'pair': pairs}, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if data.get('error'):
+                logger.error(f"Ticker error: {data['error']}")
+                return
+            
+            # עיבוד תוצאות
+            for pair, ticker_data in data.get('result', {}).items():
+                symbol = self._normalize_pair_to_symbol(pair)
+                
+                if symbol in self.http_only_symbols:
+                    try:
+                        current_price = float(ticker_data.get('c', [0])[0])
+                        if current_price <= 0:
+                            continue
+                        
+                        # חישוב שינוי
+                        open_price = float(ticker_data.get('o', current_price))
+                        change_24h_pct = ((current_price - open_price) / open_price * 100) if open_price > 0 else 0
+                        
+                        price_update = RealTimePriceUpdate(
+                            symbol=symbol,
+                            price=current_price,
+                            timestamp=datetime.now(),
+                            volume=float(ticker_data.get('v', [0, 0])[1]),
+                            bid=float(ticker_data.get('b', [current_price])[0]),
+                            ask=float(ticker_data.get('a', [current_price])[0]),
+                            high_24h=float(ticker_data.get('h', [current_price, current_price])[1]),
+                            low_24h=float(ticker_data.get('l', [current_price, current_price])[1]),
+                            change_24h_pct=change_24h_pct,
+                            source='http',
+                            quality_score=0.9  # מעט נמוך יותר מWebSocket
+                        )
+                        
+                        # הוספה לqueue
+                        self.data_queue.put(('http', price_update))
+                        self.stats['http_only_updates'] += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing {pair}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Batch fetch error: {e}")
+
+    def _normalize_pair_to_symbol(self, pair: str) -> str:
+        """נרמול pair לסמל"""
+        # הסרת USD וניקוי
+        symbol = pair.replace('USD', '').replace('ZUSD', '')
+        
+        # מיפויים מיוחדים של Kraken
+        mappings = {
+            'XXBT': 'BTC', 'XBT': 'BTC',
+            'XETH': 'ETH', 'XXRP': 'XRP',
+            'XLTC': 'LTC', 'XXLM': 'XLM',
+            'XZEC': 'ZEC', 'XXMR': 'XMR'
+        }
+        
+        for old, new in mappings.items():
+            if symbol.startswith(old):
+                return new
+        
+        # הסרת X/Z prefix
+        if symbol.startswith('X') and len(symbol) > 3:
+            symbol = symbol[1:]
+        
+        return symbol
+    
+    def _http_all_symbols_worker(self):
+    """Thread worker לעדכון כל הסמלים שלא בWebSocket"""
+    http_interval = int(os.getenv('HTTP_UPDATE_INTERVAL', '120'))  # 2 דקות ברירת מחדל
+    
+    while self.is_running:
+        try:
+            start_time = time.time()
+            
+            if self.http_only_symbols:
+                logger.info(f"📊 Updating {len(self.http_only_symbols)} HTTP-only symbols...")
+                
+                # חלוקה לbatches כדי לא להעמיס
+                batch_size = 20
+                for i in range(0, len(self.http_only_symbols), batch_size):
+                    if not self.is_running:
+                        break
+                        
+                    batch = self.http_only_symbols[i:i+batch_size]
+                    
+                    # קריאת Ticker עבור ה-batch
+                    try:
+                        self._fetch_http_batch_prices(batch)
+                        time.sleep(2)  # המתנה בין batches
+                    except Exception as e:
+                        logger.error(f"Error fetching batch {i//batch_size}: {e}")
+            
+            # המתנה לפני הסיבוב הבא
+            elapsed = time.time() - start_time
+            sleep_time = max(0, http_interval - elapsed)
+            
+            logger.info(f"✅ HTTP update completed in {elapsed:.1f}s, next in {sleep_time:.0f}s")
+            
+            for _ in range(int(sleep_time)):
+                if not self.is_running:
+                    break
+                time.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"HTTP all symbols worker error: {e}")
+            time.sleep(60)
+
+def _fetch_http_batch_prices(self, symbols: List[str]):
+    """שליפת מחירים עבור batch של סמלים"""
+    try:
+        # בניית pairs string לKraken
+        pairs = ','.join([f"{symbol}USD" for symbol in symbols])
+        
+        # קריאה לAPI
+        self.http_client._respect_rate_limits('public')
+        url = "https://api.kraken.com/0/public/Ticker"
+        response = self.http_client.session.get(url, params={'pair': pairs}, timeout=15)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if data.get('error'):
+            logger.error(f"Ticker error: {data['error']}")
+            return
+        
+        # עיבוד תוצאות
+        for pair, ticker_data in data.get('result', {}).items():
+            symbol = self._normalize_pair_to_symbol(pair)
+            
+            if symbol in self.http_only_symbols:
+                try:
+                    current_price = float(ticker_data.get('c', [0])[0])
+                    if current_price <= 0:
+                        continue
+                    
+                    # חישוב שינוי
+                    open_price = float(ticker_data.get('o', current_price))
+                    change_24h_pct = ((current_price - open_price) / open_price * 100) if open_price > 0 else 0
+                    
+                    price_update = RealTimePriceUpdate(
+                        symbol=symbol,
+                        price=current_price,
+                        timestamp=datetime.now(),
+                        volume=float(ticker_data.get('v', [0, 0])[1]),
+                        bid=float(ticker_data.get('b', [current_price])[0]),
+                        ask=float(ticker_data.get('a', [current_price])[0]),
+                        high_24h=float(ticker_data.get('h', [current_price, current_price])[1]),
+                        low_24h=float(ticker_data.get('l', [current_price, current_price])[1]),
+                        change_24h_pct=change_24h_pct,
+                        source='http',
+                        quality_score=0.9  # מעט נמוך יותר מWebSocket
+                    )
+                    
+                    # הוספה לqueue
+                    self.data_queue.put(('http', price_update))
+                    self.stats['http_only_updates'] += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing {pair}: {e}")
+                    
+    except Exception as e:
+        logger.error(f"Batch fetch error: {e}")
+
+def _normalize_pair_to_symbol(self, pair: str) -> str:
+    """נרמול pair לסמל"""
+    # הסרת USD וניקוי
+    symbol = pair.replace('USD', '').replace('ZUSD', '')
+    
+    # מיפויים מיוחדים של Kraken
+    mappings = {
+        'XXBT': 'BTC', 'XBT': 'BTC',
+        'XETH': 'ETH', 'XXRP': 'XRP',
+        'XLTC': 'LTC', 'XXLM': 'XLM',
+        'XZEC': 'ZEC', 'XXMR': 'XMR'
+    }
+    
+    for old, new in mappings.items():
+        if symbol.startswith(old):
+            return new
+    
+    # הסרת X/Z prefix
+    if symbol.startswith('X') and len(symbol) > 3:
+        symbol = symbol[1:]
+    
+    return symbol
     def _init_database(self):
         """אתחול בסיס נתונים"""
         try:
@@ -778,22 +1036,26 @@ class HybridMarketCollector:
             logger.warning("Hybrid collector already running")
             return
         
-        logger.info("🚀 Starting Hybrid Market Collector...")
-        logger.info(f"📊 Tracking {len(self.symbols)} symbols: {self.symbols[:10]}...")
+        logger.info("🚀 Starting Enhanced Hybrid Market Collector...")
+        logger.info(f"📊 WebSocket: {len(self.websocket_symbols)} symbols")
+        logger.info(f"🌐 HTTP-only: {len(self.http_only_symbols)} symbols")
+        logger.info(f"💎 Total: {len(self.all_symbols)} symbols")
         
         self.is_running = True
         self.stats['start_time'] = datetime.now()
         
         # התחלת threads
-        self.ws_thread = threading.Thread(target=self._websocket_worker, daemon=True)
-        self.http_thread = threading.Thread(target=self._http_worker, daemon=True)
-        self.processing_thread = threading.Thread(target=self._data_processor, daemon=True)
+        self.ws_thread = threading.Thread(target=self._websocket_worker, daemon=True, name="WebSocket-Worker")
+        self.http_thread = threading.Thread(target=self._http_worker, daemon=True, name="HTTP-Fallback")
+        self.http_all_symbols_thread = threading.Thread(target=self._http_all_symbols_worker, daemon=True, name="HTTP-AllSymbols")
+        self.processing_thread = threading.Thread(target=self._data_processor, daemon=True, name="Data-Processor")
         
         self.ws_thread.start()
         self.http_thread.start()
+        self.http_all_symbols_thread.start()  # התחלת ה-thread החדש
         self.processing_thread.start()
         
-        logger.info("✅ Hybrid collector started successfully")
+        logger.info("✅ Enhanced Hybrid collector started successfully")
     
     def stop(self):
         """עצירת האיסוף"""
@@ -832,7 +1094,7 @@ class HybridMarketCollector:
         return self.latest_data.copy()
     
     def get_statistics(self) -> Dict:
-        """קבלת סטטיסטיקות"""
+        """קבלת סטטיסטיקות מורחבות"""
         stats = self.stats.copy()
         
         if stats['start_time']:
@@ -841,7 +1103,12 @@ class HybridMarketCollector:
             stats['updates_per_minute'] = stats['total_updates'] / (runtime.total_seconds() / 60) if runtime.total_seconds() > 0 else 0
         
         stats['websocket_status'] = self.ws_client.connection_status
-        stats['active_symbols'] = len(self.latest_data)
+        stats['active_websocket_symbols'] = len([s for s in self.websocket_symbols if s in self.latest_data])
+        stats['active_http_symbols'] = len([s for s in self.http_only_symbols if s in self.latest_data])
+        stats['total_active_symbols'] = len(self.latest_data)
+        
+        # חישוב אחוז כיסוי
+        stats['coverage_percentage'] = (len(self.latest_data) / len(self.all_symbols) * 100) if self.all_symbols else 0
         
         return stats
     
@@ -880,7 +1147,7 @@ def run_hybrid_collector(symbols: List[str] = None, api_key: str = None, api_sec
     
     # Initialize collector
     collector = HybridMarketCollector(
-        symbols=symbols or Config.DEFAULT_COINS[:20],
+        symbols=symbols or Config.DEFAULT_COINS[:600],
         api_key=api_key or Config.get_api_key('KRAKEN_API_KEY'),
         api_secret=api_secret or Config.get_api_key('KRAKEN_API_SECRET')
     )
