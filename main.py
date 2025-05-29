@@ -35,19 +35,25 @@ except ImportError:
 
 # ייבוא המודול ההיברידי החדש
 try:
-    from modules.hybrid_market_collector import HybridMarketCollector, run_hybrid_collector, RealTimePriceUpdate
+    # הקובץ market_collector.py מכיל את HybridMarketCollector
+    from modules.market_collector import HybridMarketCollector, run_hybrid_collector, RealTimePriceUpdate
     HYBRID_AVAILABLE = True
     print("✅ Hybrid WebSocket + HTTP collector available")
 except ImportError as e:
     print(f"⚠️  Hybrid collector not available: {e}")
     HYBRID_AVAILABLE = False
-    # Fallback to original collector
-    try:
-        from modules.market_collector import MarketCollector, run_collector
-    except ImportError:
+
+# תמיד נייבא את MarketCollector הרגיל
+try:
+    from modules.market_collector import MarketCollector, run_collector
+    MARKET_COLLECTOR_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ Market collector not available: {e}")
+    MARKET_COLLECTOR_AVAILABLE = False
+    if not HYBRID_AVAILABLE:
         print("❌ No market collector available!")
         sys.exit(1)
-
+        
 # הגדרת לוגר
 logger = Config.setup_logging('main')
 
