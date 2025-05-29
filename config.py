@@ -44,6 +44,14 @@ class Config:
         'max_trade_percent': 0.25  # מקסימום 25% מהיתרה בטרייד אחד
     }
     
+    TRADING_SETTINGS = {
+        'use_all_symbols': True,  # האם להשתמש בכל המטבעות או רק ברשימה
+        'max_symbols': 500,  # מספר מקסימלי של מטבעות לעקוב
+        'min_volume_usd': 100000,  # נפח מינימלי ב-24 שעות
+        'exclude_symbols': ['LUNA', 'UST'],  # מטבעות להחרגה
+        'priority_symbols': ['BTC', 'ETH', 'SOL'],  # מטבעות בעדיפות גבוהה
+    }
+    
     # הגדרות איסוף נתונים
     COLLECTOR_SETTINGS = {
         'market_update_interval': 30,  # שניות

@@ -170,6 +170,34 @@ class MarketCollector:
         
         return all_prices
     
+    def get_all_available_symbols(self) -> List[str]:
+        """קבלת כל המטבעות הזמינים ב-Kraken"""
+        if not self.kraken_api:
+            return Config.DEFAULT_COINS
+    
+        try:
+            # שליפת כל הזוגות
+            resp = self.kraken_api.query_public('AssetPairs')
+            if resp.get('error'):
+                logger.error(f"Error getting pairs: {resp['error']}")
+                return Config.DEFAULT_COINS
+        
+            symbols = set()
+            for pair, info in resp.get('result', {}).items():
+                # רק זוגות עם USD שפעילים
+                if 'USD' in pair and info.get('status') == 'online':
+                    # נקה את הסמל
+                    symbol = self._normalize_kraken_symbol(pair)
+                    if symbol not in ['USD', 'EUR', 'GBP']:  # לא מטבעות פיאט
+                        symbols.add(symbol)
+        
+            # החזר רשימה ממוינת
+            return sorted(list(symbols))
+    
+        except Exception as e:
+            logger.error(f"Error getting symbols: {e}")
+            return Config.DEFAULT_COINS
+            
     def collect_market_data(self, symbols: Optional[List[str]] = None) -> pd.DataFrame:
         """איסוף נתוני שוק מלאים"""
         if symbols is None:

@@ -219,8 +219,19 @@ class AutonomousTrader:
     
     def _update_market_data(self):
         """עדכון נתוני שוק"""
-        symbols = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'MATIC']
-        
+        # במקום רשימה קבועה, קבל את כל המטבעות
+        if hasattr(self, '_all_symbols'):
+            symbols = self._all_symbols
+        else:
+            # טען פעם אחת את כל המטבעות
+            self._all_symbols = self.market_collector.get_all_available_symbols()
+            symbols = self._all_symbols
+    
+        # אם יש יותר מדי, אפשר להגביל לפי נפח/פופולריות
+        if len(symbols) > 50:  # הגבלה ל-50 המובילים
+            # כאן אפשר להוסיף לוגיקה לסינון לפי נפח מסחר
+            symbols = symbols[:50]
+    
         # Get latest prices
         prices = self.market_collector.get_combined_prices(symbols)
         

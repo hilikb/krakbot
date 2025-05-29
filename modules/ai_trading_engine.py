@@ -518,6 +518,47 @@ class AITradingEngine:
         
         return {'type': 'hold', 'amount': 0}
     
+    def select_trading_symbols(self, all_symbols: List[str], 
+                            market_data: Dict) -> List[str]:
+        """בחירת מטבעות אופטימליים למסחר"""
+        scored_symbols = []
+    
+        for symbol in all_symbols:
+            if symbol not in market_data:
+                continue
+            
+            data = market_data[symbol]
+            score = 0
+        
+            # ניקוד לפי נפח
+            volume = data.get('volume', 0)
+            if volume > 1000000:  # מעל מיליון דולר
+                score += 10
+            elif volume > 100000:  # מעל 100K
+                score += 5
+        
+            # ניקוד לפי תנודתיות
+            volatility = abs(data.get('change_pct_24h', 0))
+            if 2 < volatility < 10:  # תנודתיות אופטימלית
+                score += 8
+        
+            # ניקוד לפי spread
+            spread_pct = (data.get('spread', 0) / data.get('price', 1)) * 100
+            if spread_pct < 0.1:  # spread נמוך
+                score += 5
+        
+            # בונוס למטבעות מוכרים
+            if symbol in ['BTC', 'ETH', 'SOL', 'ADA', 'DOT']:
+                score += 3
+        
+            scored_symbols.append((symbol, score))
+    
+        # מיון לפי ניקוד
+        scored_symbols.sort(key=lambda x: x[1], reverse=True)
+    
+        # החזר את המובילים
+        return [s[0] for s in scored_symbols[:self.config['max_symbols']]]
+        
     def get_performance_metrics(self) -> Dict:
         """קבלת מטריקות ביצועים"""
         # בפועל לחשב מנתונים אמיתיים
