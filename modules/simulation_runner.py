@@ -21,7 +21,7 @@ class SimulationRunner:
     
     def __init__(self):
         self.results_history = []
-        self.ai_advisor = AIAdvisor(api_key=Config.OPENAI_API_KEY)
+        self.ai_advisor = AIAdvisor(api_key=Config.get_api_key(OPENAI_API_KEY))
         
     def load_market_data(self, symbol: str, days: int = 30, 
                         use_live: bool = True) -> pd.DataFrame:
