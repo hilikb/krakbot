@@ -199,67 +199,139 @@ def optimize_simulation_params(
     initial_balances = [1000],
     take_profits = [0.05, 0.1, 0.15],
     stop_losses = [0.02, 0.04, 0.06],
-    max_positions_list = [1, 2, 3]
+    max_positions_list = [1, 2]
 ):
-    hist = pd.read_csv(HISTORY_FILE, parse_dates=['timestamp'])
-    live = pd.read_csv(LIVE_FILE, parse_dates=['timestamp'])
-    df_all = pd.concat([hist, live], ignore_index=True)
+    # בדיקת קיום קבצי נתונים
+    if not os.path.exists(HISTORY_FILE) and not os.path.exists(LIVE_FILE):
+        print("❌ לא נמצאו קבצי נתונים!")
+        print(f"נדרש: {HISTORY_FILE} או {LIVE_FILE}")
+        return pd.DataFrame()
+    
+    # טעינת נתונים
+    df_all = pd.DataFrame()
+    
+    if os.path.exists(HISTORY_FILE):
+        try:
+            hist = pd.read_csv(HISTORY_FILE, parse_dates=['timestamp'])
+            df_all = pd.concat([df_all, hist], ignore_index=True)
+            print(f"✅ נטען קובץ היסטוריה: {len(hist)} שורות")
+        except Exception as e:
+            print(f"⚠️ שגיאה בטעינת היסטוריה: {e}")
+    
+    if os.path.exists(LIVE_FILE):
+        try:
+            live = pd.read_csv(LIVE_FILE, parse_dates=['timestamp'])
+            df_all = pd.concat([df_all, live], ignore_index=True)
+            print(f"✅ נטען קובץ לייב: {len(live)} שורות")
+        except Exception as e:
+            print(f"⚠️ שגיאה בטעינת נתונים חיים: {e}")
+    
+    if df_all.empty:
+        print("❌ לא נטענו נתונים!")
+        return pd.DataFrame()
+    
+    # ניקוי כפילויות
     df_all.drop_duplicates(subset=['timestamp', 'pair'], inplace=True)
+    print(f"📊 סה״כ נתונים לאחר ניקוי: {len(df_all)} שורות")
 
     param_grid = list(product(strategies, initial_balances, take_profits, stop_losses, max_positions_list))
     results = []
     best_overall = None
     best_profit = -np.inf
 
-    for params in param_grid:
+    print(f"🧪 מריץ {len(param_grid)} סימולציות...")
+
+    for i, params in enumerate(param_grid):
         strategy, initial_balance, take_profit, stop_loss, max_positions = params
-        print(f"\n---\nבדיקה: {strategy} | balance={initial_balance} | tp={take_profit} | sl={stop_loss} | pos={max_positions}")
+        print(f"\n[{i+1}/{len(param_grid)}] בדיקה: {strategy} | balance={initial_balance} | tp={take_profit} | sl={stop_loss} | pos={max_positions}")
+        
         all_profits = []
+        pairs_tested = 0
+        
         for pair in sorted(df_all['pair'].unique()):
             df = df_all[df_all['pair'] == pair].sort_values('timestamp').reset_index(drop=True)
             if len(df) < 50:
                 continue
-            engine = SimulationEngine(
-                initial_balance=initial_balance,
-                take_profit=take_profit,
-                stop_loss=stop_loss,
-                max_positions=max_positions
-            )
-            result = engine.run_simulation(df, strategy=strategy)
-            all_profits.append(result['total_profit_pct'])
+            
+            try:
+                engine = SimulationEngine(
+                    initial_balance=initial_balance,
+                    take_profit=take_profit,
+                    stop_loss=stop_loss,
+                    max_positions=max_positions
+                )
+                result = engine.run_simulation(df, strategy=strategy)
+                all_profits.append(result['total_profit_pct'])
+                pairs_tested += 1
+            except Exception as e:
+                print(f"    ⚠️ שגיאה ב-{pair}: {e}")
+                continue
+        
         if not all_profits:
+            print("    ❌ לא הושלמו סימולציות")
             continue
+            
         avg_profit = np.mean(all_profits)
         max_profit = np.max(all_profits)
         min_profit = np.min(all_profits)
+        
         result_dict = {
             'strategy': strategy,
             'initial_balance': initial_balance,
             'take_profit': take_profit,
             'stop_loss': stop_loss,
             'max_positions': max_positions,
-            'avg_profit_pct': avg_profit,
+            'avg_profit_pct': avg_profit,  # הוסף את העמודה החסרה!
             'max_profit_pct': max_profit,
-            'min_profit_pct': min_profit
+            'min_profit_pct': min_profit,
+            'pairs_tested': pairs_tested
         }
-        print(f"  -> תוצאה ממוצעת: {avg_profit*100:.2f}%")
+        
+        print(f"    ✅ תוצאה: {avg_profit*100:.2f}% (על {pairs_tested} זוגות)")
         results.append(result_dict)
+        
         if avg_profit > best_profit:
             best_profit = avg_profit
             best_overall = result_dict
 
+    if not results:
+        print("❌ לא התקבלו תוצאות!")
+        return pd.DataFrame()
+
     summary_df = pd.DataFrame(results)
-    summary_df.sort_values('avg_profit_pct', ascending=False, inplace=True)
+    
+    # מיון בטוח - בדיקה שהעמודה קיימת
+    if 'avg_profit_pct' in summary_df.columns:
+        summary_df.sort_values('avg_profit_pct', ascending=False, inplace=True)
+    else:
+        print("⚠️ Warning: avg_profit_pct column not found")
+    
+    # שמירת תוצאות
     outpath = os.path.join(DATA_DIR, 'param_optimization_summary.csv')
-    summary_df.to_csv(outpath, index=False)
-    print(f"\n---\nסיכום: הפרמטרים הכי טובים:\n{best_overall}")
-    print(f"\nנשמרה טבלת אופטימיזציה: {outpath}")
-    print(summary_df.head(20))
+    try:
+        summary_df.to_csv(outpath, index=False)
+        print(f"\n💾 נשמרה טבלת אופטימיזציה: {outpath}")
+    except Exception as e:
+        print(f"⚠️ שגיאה בשמירה: {e}")
+    
+    # הצגת תוצאות
+    print(f"\n🏆 סיכום: הפרמטרים הכי טובים:")
+    if best_overall:
+        print(f"📊 אסטרטגיה: {best_overall['strategy']}")
+        print(f"💰 הון: ${best_overall['initial_balance']}")
+        print(f"📈 Take Profit: {best_overall['take_profit']*100}%")
+        print(f"📉 Stop Loss: {best_overall['stop_loss']*100}%")
+        print(f"🎯 פוזיציות מקס: {best_overall['max_positions']}")
+        print(f"💹 רווח ממוצע: {best_overall['avg_profit_pct']*100:.2f}%")
+    
+    print(f"\n📋 Top 10 תוצאות:")
+    print(summary_df.head(10).to_string(index=False))
+    
     return summary_df
 
 if __name__ == "__main__":
     optimize_simulation_params(
-        strategies = ['combined', 'ema'],
+        strategies = ['combined', 'ema', 'rsi'],
         initial_balances = [1000],
         take_profits = [0.05, 0.10, 0.15],
         stop_losses = [0.02, 0.04, 0.06],
