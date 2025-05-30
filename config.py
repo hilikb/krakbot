@@ -134,7 +134,22 @@ class AdvancedConfig:
                 'description': config['description'],
                 'masked_value': SecurityConfig.mask_sensitive_value(value) if value else None
             }
-    
+
+    def _load_symbol_list(self, env_var: str, default: List[str]) -> List[str]:
+        """טעינת רשימת סמלים מ-environment עם תמיכה בערכים מיוחדים"""
+        env_value = os.getenv(env_var)
+        
+        # בדיקה אם זה ערך מיוחד
+        if env_value == 'ALL_AVAILABLE':
+            return []  # רשימה ריקה - תמולא דינמית
+        elif env_value == 'DYNAMIC':
+            return []  # רשימה ריקה - תמולא דינמית
+        elif env_value:
+            return [s.strip().upper() for s in env_value.split(',')]
+        
+        return default
+ 
+ 
     def _load_trading_config(self):
         """טעינת הגדרות מסחר מתקדמות"""
         # Default trading parameters with enhanced settings
@@ -171,14 +186,15 @@ class AdvancedConfig:
         
         # Symbol configuration
         self.SYMBOL_CONFIG = {
-            'default_symbols': self._load_symbol_list('DEFAULT_SYMBOLS', 
-                ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'MATIC', 'LINK', 'AVAX', 'XRP', 'ATOM']),
-            'priority_symbols': self._load_symbol_list('PRIORITY_SYMBOLS', 
-                ['BTC', 'ETH', 'SOL']),
-            'excluded_symbols': self._load_symbol_list('EXCLUDED_SYMBOLS', 
-                ['LUNA', 'UST', 'FTT']),
+            'default_symbols': self._load_symbol_list('DEFAULT_SYMBOLS', []),
+            'priority_symbols': self._load_symbol_list('PRIORITY_SYMBOLS', []),
+            'excluded_symbols': self._load_symbol_list('EXCLUDED_SYMBOLS', []),
             'max_symbols': int(os.getenv('MAX_SYMBOLS', '600')),
-            'symbol_rotation_enabled': os.getenv('SYMBOL_ROTATION', 'true').lower() == 'true'
+            'symbol_rotation_enabled': os.getenv('SYMBOL_ROTATION', 'true').lower() == 'true',
+            'collect_all_available': os.getenv('COLLECT_ALL_AVAILABLE', 'true').lower() == 'true',
+            'dynamic_priority': os.getenv('WEBSOCKET_DYNAMIC_PRIORITY', 'true').lower() == 'true',
+            'selection_algorithm': os.getenv('SYMBOL_SELECTION_ALGORITHM', 'volume_volatility'),
+            'rotation_interval': int(os.getenv('SYMBOL_ROTATION_INTERVAL', '3600'))
         }
         
         # ⭐ הוספה חדשה - Hybrid Mode Settings ⭐
