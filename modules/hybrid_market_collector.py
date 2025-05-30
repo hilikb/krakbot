@@ -119,24 +119,18 @@ class WebSocketClient:
     
     def _convert_symbol_to_kraken(self, symbol: str) -> str:
         """המרת סמל לפורמט Kraken"""
-        # Map common symbols to Kraken format
-        symbol_map = {
-            'BTC': 'XBT/USD',
-            'ETH': 'ETH/USD', 
-            'SOL': 'SOL/USD',
-            'ADA': 'ADA/USD',
-            'DOT': 'DOT/USD',
-            'MATIC': 'MATIC/USD',
-            'LINK': 'LINK/USD',
-            'AVAX': 'AVAX/USD',
-            'XRP': 'XRP/USD',
-            'ATOM': 'ATOM/USD'
+        # מיפויים מיוחדים בלבד - רק למטבעות עם שמות שונים ב-Kraken
+        special_mappings = {
+            'BTC': 'XBT/USD',  # Bitcoin נקרא XBT ב-Kraken
         }
         
-        if symbol in symbol_map:
-            return symbol_map[symbol]
-        else:
-            return f"{symbol}/USD"
+        # בדיקה אם יש מיפוי מיוחד
+        if symbol in special_mappings:
+            return special_mappings[symbol]
+        
+        # לכל השאר - פשוט הוסף /USD
+        # זה יעבוד עבור: ETH, SOL, ADA, DOT, MATIC, LINK וכו'
+        return f"{symbol}/USD"
     
     async def _listen_loop(self):
         """לולאת האזנה"""
@@ -505,54 +499,65 @@ class HybridMarketCollector:
     """איוסף שוק היברידי - WebSocket + HTTP מואץ"""
     
     def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
-        # עדכון לתמיכה בהגדרות החדשות
-        websocket_limit = Config.HYBRID_CONFIG.get('websocket_max_symbols', 80)
-        all_symbols = symbols or Config.DEFAULT_COINS[:Config.SYMBOL_CONFIG.get('max_symbols', 600)]
+        # אם collect_all_available מופעל, קבל את כל הסמלים הזמינים
+        if Config.SYMBOL_CONFIG.get('collect_all_available', False):
+            # קבל את כל הסמלים הזמינים מ-Kraken
+            all_available_symbols = self._fetch_all_available_symbols()
+            symbols = all_available_symbols[:Config.SYMBOL_CONFIG.get('max_symbols', 600)]
+        else:
+            symbols = symbols or Config.DEFAULT_COINS
         
-        # הפרדה בין סמלים ל-WebSocket ו-HTTP
-        self.websocket_symbols = all_symbols[:websocket_limit]
-        self.http_only_symbols = all_symbols[websocket_limit:]
-        self.all_symbols = all_symbols
+        # בחירה דינמית של סמלים
+        if Config.SYMBOL_CONFIG.get('dynamic_priority', False):
+            from modules.dynamic_symbol_selector import DynamicSymbolSelector
+            
+            selector = DynamicSymbolSelector()
+            algorithm = Config.SYMBOL_CONFIG.get('selection_algorithm', 'volume_volatility')
+            
+            self.websocket_symbols, self.http_only_symbols = selector.select_symbols(
+                available_symbols=symbols,
+                websocket_limit=Config.HYBRID_CONFIG.get('websocket_max_symbols', 80),
+                algorithm=algorithm
+            )
+        else:
+            # חלוקה רגילה
+            websocket_limit = Config.HYBRID_CONFIG.get('websocket_max_symbols', 80)
+            self.websocket_symbols = symbols[:websocket_limit]
+            self.http_only_symbols = symbols[websocket_limit:]
         
-        logger.info(f"🚀 Hybrid Setup: {len(self.websocket_symbols)} WebSocket + {len(self.http_only_symbols)} HTTP-only symbols")
+        self.all_symbols = symbols
         
-        # Clients
-        self.ws_client = WebSocketClient(self.websocket_symbols)  # רק 80 סמלים
-        self.http_client = OptimizedHTTPClient(api_key, api_secret)
+        logger.info(f"🚀 Dynamic Hybrid Setup:")
+        logger.info(f"   • Total symbols: {len(self.all_symbols)}")
+        logger.info(f"   • WebSocket (real-time): {len(self.websocket_symbols)}")
+        logger.info(f"   • HTTP (batch updates): {len(self.http_only_symbols)}")
+        logger.info(f"   • Selection mode: {'DYNAMIC' if Config.SYMBOL_CONFIG.get('dynamic_priority') else 'STATIC'}")
         
-        # State
-        self.is_running = False
-        self.data_queue = queue.Queue()
-        self.latest_data = {}
-        
-        # Threading
-        self.ws_thread = None
-        self.http_thread = None
-        self.http_all_symbols_thread = None  # Thread חדש לכל הסמלים
-        self.processing_thread = None
-        
-        # Database
-        self.db_path = os.path.join(Config.DATA_DIR, 'hybrid_market_data.db')
-        self._init_database()
-        
-        # Callbacks
-        self.data_callbacks = []
-        
-        # Statistics
-        self.stats = {
-            'websocket_updates': 0,
-            'http_updates': 0,
-            'http_only_updates': 0,
-            'total_updates': 0,
-            'websocket_symbols_count': len(self.websocket_symbols),
-            'http_only_symbols_count': len(self.http_only_symbols),
-            'start_time': None,
-            'last_update': None
-        }
-        
-        # Setup WebSocket callbacks
-        self.ws_client.add_price_callback(self._on_websocket_update)
-        self.ws_client.add_connection_callback(self._on_connection_change)
+        # ... rest of init
+
+    def _fetch_all_available_symbols(self) -> List[str]:
+        """שליפת כל הסמלים הזמינים מ-Kraken"""
+        try:
+            if not hasattr(self, 'http_client'):
+                self.http_client = OptimizedHTTPClient()
+            
+            pairs = self.http_client.get_asset_pairs()
+            
+            symbols = []
+            for pair, info in pairs.items():
+                if 'USD' in pair and info.get('status') == 'online':
+                    symbol = pair.replace('USD', '').replace('ZUSD', '')
+                    # ניקוי סמלים של Kraken
+                    symbol = symbol.replace('XXBT', 'BTC').replace('XETH', 'ETH')
+                    if symbol not in symbols:
+                        symbols.append(symbol)
+            
+            logger.info(f"📊 Found {len(symbols)} available symbols on Kraken")
+            return sorted(symbols)
+            
+        except Exception as e:
+            logger.error(f"Error fetching available symbols: {e}")
+            return []
     
     def _http_all_symbols_worker(self):
         """Thread worker לעדכון כל הסמלים שלא בWebSocket"""
