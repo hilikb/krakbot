@@ -499,41 +499,58 @@ class HybridMarketCollector:
     """איוסף שוק היברידי - WebSocket + HTTP מואץ"""
     
     def __init__(self, symbols: List[str] = None, api_key: str = None, api_secret: str = None):
-        # אם collect_all_available מופעל, קבל את כל הסמלים הזמינים
-        if Config.SYMBOL_CONFIG.get('collect_all_available', False):
-            # קבל את כל הסמלים הזמינים מ-Kraken
-            all_available_symbols = self._fetch_all_available_symbols()
-            symbols = all_available_symbols[:Config.SYMBOL_CONFIG.get('max_symbols', 600)]
-        else:
-            symbols = symbols or Config.DEFAULT_COINS
+        # עדכון לתמיכה בהגדרות החדשות
+        websocket_limit = Config.WEBSOCKET_MAX_SYMBOLS
+        all_symbols = symbols or Config.DEFAULT_COINS[:Config.SYMBOL_CONFIG.get('max_symbols', 600)]
         
-        # בחירה דינמית של סמלים
-        if Config.SYMBOL_CONFIG.get('dynamic_priority', False):
-            from modules.dynamic_symbol_selector import DynamicSymbolSelector
-            
-            selector = DynamicSymbolSelector()
-            algorithm = Config.SYMBOL_CONFIG.get('selection_algorithm', 'volume_volatility')
-            
-            self.websocket_symbols, self.http_only_symbols = selector.select_symbols(
-                available_symbols=symbols,
-                websocket_limit=Config.HYBRID_CONFIG.get('websocket_max_symbols', 80),
-                algorithm=algorithm
-            )
-        else:
-            # חלוקה רגילה
-            websocket_limit = Config.HYBRID_CONFIG.get('websocket_max_symbols', 80)
-            self.websocket_symbols = symbols[:websocket_limit]
-            self.http_only_symbols = symbols[websocket_limit:]
+        # הפרדה בין סמלים ל-WebSocket ו-HTTP
+        self.websocket_symbols = all_symbols[:websocket_limit]
+        self.http_only_symbols = all_symbols[websocket_limit:]
         
-        self.all_symbols = symbols
+        # שמירת כל הסמלים - חשוב!
+        self.symbols = all_symbols
+        self.all_symbols = all_symbols  # הוסף את השורה הזו!
         
-        logger.info(f"🚀 Dynamic Hybrid Setup:")
-        logger.info(f"   • Total symbols: {len(self.all_symbols)}")
-        logger.info(f"   • WebSocket (real-time): {len(self.websocket_symbols)}")
-        logger.info(f"   • HTTP (batch updates): {len(self.http_only_symbols)}")
-        logger.info(f"   • Selection mode: {'DYNAMIC' if Config.SYMBOL_CONFIG.get('dynamic_priority') else 'STATIC'}")
+        logger.info(f"🚀 Hybrid Setup: {len(self.websocket_symbols)} WebSocket + {len(self.http_only_symbols)} HTTP-only symbols")
         
-        # ... rest of init
+        # Clients
+        self.ws_client = WebSocketClient(self.websocket_symbols)
+        self.http_client = OptimizedHTTPClient(api_key, api_secret)
+        
+        # State
+        self.is_running = False
+        self.data_queue = queue.Queue()
+        self.latest_data = {}
+        
+        # Threading
+        self.ws_thread = None
+        self.http_thread = None
+        self.http_all_symbols_thread = None
+        self.processing_thread = None
+        
+        # Database
+        self.db_path = os.path.join(Config.DATA_DIR, 'hybrid_market_data.db')
+        self._init_database()
+        
+        # Callbacks
+        self.data_callbacks = []
+        
+        # Statistics
+        self.stats = {
+            'websocket_updates': 0,
+            'http_updates': 0,
+            'http_only_updates': 0,
+            'total_updates': 0,
+            'websocket_symbols_count': len(self.websocket_symbols),
+            'http_only_symbols_count': len(self.http_only_symbols),
+            'total_symbols_count': len(all_symbols),  # הוסף גם את זה
+            'start_time': None,
+            'last_update': None
+        }
+        
+        # Setup WebSocket callbacks
+        self.ws_client.add_price_callback(self._on_websocket_update)
+        self.ws_client.add_connection_callback(self._on_connection_change)
 
     def _fetch_all_available_symbols(self) -> List[str]:
         """שליפת כל הסמלים הזמינים מ-Kraken"""
@@ -561,7 +578,7 @@ class HybridMarketCollector:
     
     def _http_all_symbols_worker(self):
         """Thread worker לעדכון כל הסמלים שלא בWebSocket"""
-        http_interval = int(os.getenv('HTTP_UPDATE_INTERVAL', '120'))  # 2 דקות ברירת מחדל
+        http_interval = Config.HTTP_UPDATE_INTERVAL  # משתמש בהגדרה מ-Config
         
         while self.is_running:
             try:
@@ -933,11 +950,11 @@ class HybridMarketCollector:
         if self.is_running:
             logger.warning("Hybrid collector already running")
             return
-        
+            
         logger.info("🚀 Starting Enhanced Hybrid Market Collector...")
         logger.info(f"📊 WebSocket: {len(self.websocket_symbols)} symbols")
         logger.info(f"🌐 HTTP-only: {len(self.http_only_symbols)} symbols")
-        logger.info(f"💎 Total: {len(self.all_symbols)} symbols")
+        logger.info(f"💎 Total: {len(self.all_symbols)} symbols")  # כאן משתמש ב-all_symbols
         
         self.is_running = True
         self.stats['start_time'] = datetime.now()
