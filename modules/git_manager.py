@@ -41,54 +41,54 @@ class GitManager:
     def _create_gitignore(self):
         """יצירת קובץ .gitignore בסיסי"""
         gitignore_content = """# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-.venv
+        __pycache__/
+        *.py[cod]
+        *$py.class
+        *.so
+        .Python
+        env/
+        venv/
+        ENV/
+        .venv
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+        # IDE
+        .idea/
+        .vscode/
+        *.swp
+        *.swo
 
-# Logs
-logs/
-*.log
+        # Logs
+        logs/
+        *.log
 
-# Environment variables
-.env
-.env.local
-.env.*.local
+        # Environment variables
+        .env
+        .env.local
+        .env.*.local
 
-# Data files (optional - uncomment if needed)
-# data/*.csv
-# data/*.json
+        # Data files (optional - uncomment if needed)
+        # data/*.csv
+        # data/*.json
 
-# Temporary files
-*.tmp
-*.temp
-.DS_Store
-Thumbs.db
+        # Temporary files
+        *.tmp
+        *.temp
+        .DS_Store
+        Thumbs.db
 
-# Jupyter
-.ipynb_checkpoints/
+        # Jupyter
+        .ipynb_checkpoints/
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
+        # Testing
+        .pytest_cache/
+        .coverage
+        htmlcov/
 
-# Distribution
-dist/
-build/
-*.egg-info/
-"""
+        # Distribution
+        dist/
+        build/
+        *.egg-info/
+        """
         
         gitignore_path = os.path.join(self.repo_path, '.gitignore')
         if not os.path.exists(gitignore_path):
@@ -114,14 +114,78 @@ build/
             return False
     
     def add_all(self) -> bool:
-        """הוספת כל הקבצים לאזור הבמה"""
+        """הוספת כל הקבצים לאזור הבמה - תוך כיבוד .gitignore"""
         try:
-            subprocess.run(['git', 'add', '.'], cwd=self.repo_path, check=True)
+            # שימוש ב-add עם -A שמכבד את .gitignore
+            subprocess.run(['git', 'add', '-A'], cwd=self.repo_path, check=True)
+            
+            # בדיקה שלא נוספו קבצים מה-gitignore בטעות
+            result = subprocess.run(
+                ['git', 'ls-files', '--ignored', '--exclude-standard', '--others'],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.stdout.strip():
+                logger.warning(f"Warning: Ignored files in staging area: {result.stdout}")
+                # הסרת קבצים מתעלמים מה-staging
+                subprocess.run(['git', 'rm', '--cached', '-r', '--ignore-unmatch'] + result.stdout.strip().split('\n'), 
+                             cwd=self.repo_path, 
+                             stderr=subprocess.DEVNULL)
+            
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to add files: {e}")
             return False
-    
+     
+    def clean_ignored_files(self) -> bool:
+        """הסרת קבצים שנוספו בטעות למרות שהם ב-gitignore"""
+        try:
+            # רשימת כל הקבצים שאמורים להיות מתעלמים
+            result = subprocess.run(
+                ['git', 'ls-files', '-i', '--exclude-from=.gitignore'],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            ignored_files = result.stdout.strip().split('\n')
+            ignored_files = [f for f in ignored_files if f]  # הסרת שורות ריקות
+            
+            if ignored_files:
+                logger.info(f"Found {len(ignored_files)} ignored files in repository")
+                
+                # הסרה מה-repository (אבל לא מהדיסק)
+                for file in ignored_files:
+                    try:
+                        subprocess.run(
+                            ['git', 'rm', '--cached', file],
+                            cwd=self.repo_path,
+                            check=True,
+                            capture_output=True
+                        )
+                        logger.info(f"Removed from git: {file}")
+                    except subprocess.CalledProcessError:
+                        pass
+                
+                # commit השינויים
+                subprocess.run(
+                    ['git', 'commit', '-m', 'Remove ignored files from repository'],
+                    cwd=self.repo_path,
+                    capture_output=True
+                )
+                
+                return True
+            else:
+                logger.info("No ignored files found in repository")
+                return False
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to clean ignored files: {e}")
+            return False
+     
     def commit(self, message: Optional[str] = None) -> bool:
         """ביצוע commit"""
         if message is None:
@@ -212,10 +276,11 @@ build/
         """בדיקה אם יש remote מוגדר"""
         return self.get_remote_url() is not None
     
-    def auto_update(self, 
-                   commit_message: Optional[str] = None,
-                   push_to_remote: bool = True) -> Tuple[bool, str]:
-        """עדכון אוטומטי מלא"""
+    def auto_update(self,
+                    commit_message: Optional[str] = None,
+                    push_to_remote: bool = True,
+                    respect_gitignore: bool = True) -> Tuple[bool, str]:
+        """עדכון אוטומטי מלא עם כיבוד gitignore"""
         
         # בדיקות ראשוניות
         if not self.is_git_installed():
@@ -225,14 +290,38 @@ build/
             logger.info("No Git repository found. Skipping auto-update.")
             return False, "No Git repository"
         
+        # ניקוי קבצים מתעלמים אם נדרש
+        if respect_gitignore:
+            self.clean_ignored_files()
+        
         # בדיקת שינויים
         if not self.has_changes():
             logger.info("No changes to commit")
             return True, "No changes"
         
-        # הוספה וחיוב
+        # הוספה וחיוב - עם בדיקה נוספת
         if not self.add_all():
             return False, "Failed to add files"
+        
+        # בדיקה נוספת שלא נוספו קבצים מ-gitignore
+        if respect_gitignore:
+            ignored_in_staging = subprocess.run(
+                ['git', 'diff', '--cached', '--name-only'],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            ).stdout.strip().split('\n')
+            
+            # בדיקה מול gitignore
+            with open(os.path.join(self.repo_path, '.gitignore'), 'r') as f:
+                gitignore_patterns = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+            
+            for file in ignored_in_staging:
+                for pattern in gitignore_patterns:
+                    if pattern in file or file.endswith(pattern.replace('*', '')):
+                        # הסרה מ-staging
+                        subprocess.run(['git', 'reset', 'HEAD', file], cwd=self.repo_path)
+                        logger.warning(f"Removed {file} from staging (matched gitignore pattern: {pattern})")
             
         if not self.commit(commit_message):
             return False, "Failed to commit"
