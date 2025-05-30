@@ -416,7 +416,7 @@ class EnhancedAutonomousTrader:
         from modules.market_collector import MarketCollector
         
         self.ai_engine = AITradingEngine()
-        self.executor = TradingExecutor(mode='demo')
+        self.executor = TradingExecutor(mode='real')
         self.market_collector = MarketCollector()
         
         # Enhanced configuration
