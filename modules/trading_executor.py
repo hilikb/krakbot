@@ -28,9 +28,16 @@ class TradingExecutor:
         
         # אתחול API רק במצב real
         self.api = None
-        if self.mode == 'real' and Config.get_api_key('KRAKEN_API_KEY'):
-            self.api = krakenex.API(Config.get_api_key('KRAKEN_API_KEY'), Config.get_api_key('KRAKEN_API_SECRET'))
-            logger.info("Trading executor initialized in REAL mode - be careful!")
+        if self.mode == 'real':
+            kraken_key = Config.get_api_key('KRAKEN_API_KEY')
+            kraken_secret = Config.get_api_key('KRAKEN_API_SECRET')
+            
+            if kraken_key and kraken_secret:
+                self.api = krakenex.API(kraken_key, kraken_secret)
+                logger.info("Trading executor initialized in REAL mode - be careful!")
+            else:
+                logger.warning("No Kraken API credentials - running in DEMO mode")
+                self.mode = 'demo'
         else:
             logger.info(f"Trading executor initialized in {self.mode.upper()} mode")
         
