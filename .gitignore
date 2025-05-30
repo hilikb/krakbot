@@ -1,18 +1,32 @@
+# קבצי קומפילציה של פייתון
+*.py[cod]
 __pycache__/
+**/__pycache__/
 
+# סביבת פיתוח וירטואלית
 venv/
+.venv/
 
+# קבצי קונפיגורציה וסודות
+.env
+*.env
+
+# קבצי לוג
+*.log
 logs/
 
-*.pyc
+# קבצים זמניים של מערכת
+.DS_Store
+Thumbs.db
 
-*.log
+# PyInstaller
+dist/
+build/
+*.spec
 
-*.env
-.env
-/modules/__pycache__
-.env
-/modules/__pycache__
-/modules/__pycache__
-.env
-.env
+# קבצים זמניים של IDEs (כמו VSCode, PyCharm)
+.vscode/
+.idea/
+
+# קבצים נוספים שאתה רוצה להחריג
+modules/__pycache__/
